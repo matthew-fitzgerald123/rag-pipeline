@@ -1,0 +1,19 @@
+Machine learning is a subset of artificial intelligence that enables systems to learn from data.
+
+Supervised learning uses labelled training data to learn a mapping from inputs to outputs. Common algorithms include logistic regression, decision trees, and neural networks.
+
+Unsupervised learning finds patterns in unlabelled data. Clustering algorithms like k-means group similar data points together.
+
+Reinforcement learning trains agents to take actions in an environment to maximise cumulative reward.
+
+A neural network is composed of layers of interconnected nodes called neurons. Deep learning refers to neural networks with many layers.
+
+Overfitting occurs when a model learns the training data too well and fails to generalise to new data. Regularisation techniques like dropout and L2 penalty help prevent overfitting.
+
+A training set is used to fit the model. A validation set is used to tune hyperparameters. A test set is used to evaluate final performance.
+
+Feature engineering is the process of transforming raw data into features that better represent the underlying patterns to the model.
+
+Transfer learning reuses a model trained on one task as the starting point for a model on a different task. This is especially useful when labelled data is scarce.
+
+Gradient descent is an optimisation algorithm that iteratively adjusts model parameters to minimise a loss function.
