@@ -68,3 +68,26 @@ def test_eval_history():
 def test_empty_query_still_returns():
     r = client.post("/query", json={"query": "xyzzy nonsense query 12345", "top_k": 3})
     assert r.status_code in [200, 404]
+
+
+def test_query_returns_citations():
+    r = client.post("/query", json={"query": "What is supervised learning?", "top_k": 3})
+    assert r.status_code == 200
+    data = r.json()
+    assert "citations" in data
+    assert isinstance(data["citations"], list)
+    for entry in data["citations"]:
+        assert "sentence" in entry
+        assert "citations" in entry
+
+
+def test_citation_extraction_unit():
+    from app.citations import extract_citations
+    chunks = [
+        {"chunk_id": "c1", "text": "Supervised learning trains on labeled data.", "metadata": {"title": "ML Basics"}},
+        {"chunk_id": "c2", "text": "Neural networks are universal function approximators.", "metadata": {}},
+    ]
+    answer = "Supervised learning uses labeled training data."
+    result = extract_citations(answer, chunks, threshold=0.2)
+    assert len(result) >= 1
+    assert result[0]["citations"][0]["chunk_id"] == "c1"

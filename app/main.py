@@ -13,6 +13,7 @@ from app.vector_store import vector_store
 from app.generator import generator
 from app.evaluator import hit_rate, mean_reciprocal_rank, faithfulness, answer_relevance
 from app.reranker import rerank, RERANKER_TOP_K
+from app.citations import extract_citations
 
 load_dotenv()
 Base.metadata.create_all(bind=engine)
@@ -60,10 +61,11 @@ def query(req: QueryReq, db: Session = Depends(get_db)):
     db.commit()
 
     return {
-        "query":    req.query,
-        "answer":   answer,
-        "chunks":   chunks,
-        "reranked": req.rerank,
+        "query":     req.query,
+        "answer":    answer,
+        "chunks":    chunks,
+        "reranked":  req.rerank,
+        "citations": extract_citations(answer, chunks),
         "eval": {
             "faithfulness":     log.faithfulness,
             "answer_relevance": answer_relevance(req.query, answer),
