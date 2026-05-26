@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test
+    runs-on: macos-14
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: rag_pipeline
+          POSTGRES_USER: rag_pipeline
+          POSTGRES_PASSWORD: ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://rag_pipeline:ci_password@localhost:5432/rag_pipeline
+      GEN_MODEL: mlx-community/Mistral-7B-Instruct-v0.3-4bit
+      CHROMA_PATH: ./chroma_db
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ingest sample documents
+        run: python scripts/ingest.py
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+
+  terraform-validate:
+    name: Terraform validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Terraform init
+        run: terraform init -backend=false
+        working-directory: infra
+
+      - name: Terraform validate
+        run: terraform validate
+        working-directory: infra

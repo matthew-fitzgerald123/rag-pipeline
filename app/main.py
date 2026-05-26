@@ -41,7 +41,7 @@ class EvalQueryReq(BaseModel):
 @app.post("/query", tags=["rag"])
 def query(req: QueryReq, db: Session = Depends(get_db)):
     if vector_store.count() == 0:
-        raise HTTPException(400, "No documents indexed — run: make ingest")
+        raise HTTPException(400, "No documents indexed. Run: make ingest")
 
     candidates = vector_store.query(req.query, top_k=max(req.top_k, RERANKER_TOP_K))
     if not candidates:

@@ -30,7 +30,7 @@ def ingest_file(path: Path, db):
 
     existing = db.query(Document).filter_by(title=title).first()
     if existing:
-        print(f"  Skipping {title} — already ingested")
+        print(f"  Skipping {title}: already ingested")
         return
 
     doc = Document(doc_id=doc_id, title=title, content=content)
@@ -45,13 +45,13 @@ def ingest_file(path: Path, db):
         overlap=64,
     )
     vector_store.add_chunks(chunks)
-    print(f"  Ingested: {title} — {len(chunks)} chunks")
+    print(f"  Ingested: {title} ({len(chunks)} chunks)")
 
 if __name__ == "__main__":
     db = SessionLocal()
     txt_files = list(DATA_DIR.glob("*.txt"))
     if not txt_files:
-        print("No .txt files found in data/ — add some documents first")
+        print("No .txt files found in data/. Add some documents first.")
         sys.exit(1)
     print(f"Ingesting {len(txt_files)} files...")
     for f in txt_files:
