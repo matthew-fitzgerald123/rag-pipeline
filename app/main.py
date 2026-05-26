@@ -1,8 +1,9 @@
 from __future__ import annotations
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Any
+from typing import Any, AsyncIterator
 import os
 from dotenv import load_dotenv
 
@@ -68,6 +69,25 @@ def query(req: QueryReq, db: Session = Depends(get_db)):
             "answer_relevance": answer_relevance(req.query, answer),
         },
     }
+
+@app.post("/query/stream", tags=["rag"])
+async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
+    """Stream answer tokens as SSE events. Does not log to DB."""
+    if vector_store.count() == 0:
+        raise HTTPException(400, "No documents indexed -- run: make ingest")
+
+    candidates = vector_store.query(req.query, top_k=max(req.top_k, RERANKER_TOP_K))
+    if not candidates:
+        raise HTTPException(404, "No relevant chunks found")
+
+    chunks = rerank(req.query, candidates, req.top_k) if req.rerank else candidates[:req.top_k]
+
+    async def event_generator() -> AsyncIterator[str]:
+        async for payload in generator.answer_stream(req.query, chunks):
+            yield f"data: {payload}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 
 @app.post("/query/eval", tags=["rag"])
 def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
