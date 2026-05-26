@@ -5,6 +5,7 @@ psycopg2-binary==2.9.9
 chromadb==0.5.3
 sentence-transformers==3.0.1
 rank-bm25==0.2.2
+# cross-encoder model is downloaded at first use via sentence-transformers
 mlx-lm>=0.14.0
 pydantic==2.7.1
 pandas==2.2.2

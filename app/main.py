@@ -11,6 +11,7 @@ from app.models import Base, QueryLog
 from app.vector_store import vector_store
 from app.generator import generator
 from app.evaluator import hit_rate, mean_reciprocal_rank, faithfulness, answer_relevance
+from app.reranker import rerank, RERANKER_TOP_K
 
 load_dotenv()
 Base.metadata.create_all(bind=engine)
@@ -27,20 +28,24 @@ def startup():
 class QueryReq(BaseModel):
     query: str
     top_k: int = 5
+    rerank: bool = False
 
 class EvalQueryReq(BaseModel):
     query: str
     relevant_doc_ids: list[str]
     top_k: int = 5
+    rerank: bool = False
 
 @app.post("/query", tags=["rag"])
 def query(req: QueryReq, db: Session = Depends(get_db)):
     if vector_store.count() == 0:
         raise HTTPException(400, "No documents indexed — run: make ingest")
 
-    chunks = vector_store.query(req.query, top_k=req.top_k)
-    if not chunks:
+    candidates = vector_store.query(req.query, top_k=max(req.top_k, RERANKER_TOP_K))
+    if not candidates:
         raise HTTPException(404, "No relevant chunks found")
+
+    chunks = rerank(req.query, candidates, req.top_k) if req.rerank else candidates[:req.top_k]
 
     answer = generator.answer(req.query, chunks)
 
@@ -54,9 +59,10 @@ def query(req: QueryReq, db: Session = Depends(get_db)):
     db.commit()
 
     return {
-        "query":   req.query,
-        "answer":  answer,
-        "chunks":  chunks,
+        "query":    req.query,
+        "answer":   answer,
+        "chunks":   chunks,
+        "reranked": req.rerank,
         "eval": {
             "faithfulness":     log.faithfulness,
             "answer_relevance": answer_relevance(req.query, answer),
@@ -65,9 +71,11 @@ def query(req: QueryReq, db: Session = Depends(get_db)):
 
 @app.post("/query/eval", tags=["rag"])
 def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
-    chunks = vector_store.query(req.query, top_k=req.top_k)
-    if not chunks:
+    candidates = vector_store.query(req.query, top_k=max(req.top_k, RERANKER_TOP_K))
+    if not candidates:
         raise HTTPException(404, "No relevant chunks found")
+
+    chunks = rerank(req.query, candidates, req.top_k) if req.rerank else candidates[:req.top_k]
 
     answer = generator.answer(req.query, chunks)
     retrieved_ids = [c["chunk_id"] for c in chunks]
@@ -142,10 +150,13 @@ def eval_history(limit: int = 20, db: Session = Depends(get_db)):
 
 @app.get("/index/stats", tags=["monitoring"])
 def index_stats():
+    from app.reranker import RERANKER_MODEL
     return {
-        "total_chunks": vector_store.count(),
-        "embed_model":  os.getenv("EMBED_MODEL"),
-        "gen_model":    os.getenv("GEN_MODEL"),
+        "total_chunks":   vector_store.count(),
+        "embed_model":    os.getenv("EMBED_MODEL"),
+        "gen_model":      os.getenv("GEN_MODEL"),
+        "reranker_model": RERANKER_MODEL,
+        "hybrid_alpha":   float(os.getenv("HYBRID_ALPHA", "0.7")),
     }
 
 @app.get("/health")
