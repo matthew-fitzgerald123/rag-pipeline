@@ -4,6 +4,7 @@ sqlalchemy==2.0.30
 psycopg2-binary==2.9.9
 chromadb==0.5.3
 sentence-transformers==3.0.1
+rank-bm25==0.2.2
 mlx-lm>=0.14.0
 pydantic==2.7.1
 pandas==2.2.2
