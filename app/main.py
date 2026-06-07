@@ -1,4 +1,5 @@
 from __future__ import annotations
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -18,12 +19,15 @@ from app.citations import extract_citations
 load_dotenv()
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="RAG Pipeline", version="1.0.0")
 
-@app.on_event("startup")
-def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     generator.load_model()
     print(f"Vector store: {vector_store.count()} chunks indexed")
+    yield
+
+
+app = FastAPI(title="RAG Pipeline", version="1.0.0", lifespan=lifespan)
 
 # ── Query ─────────────────────────────────────────────────
 
