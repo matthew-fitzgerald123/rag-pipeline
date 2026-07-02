@@ -102,6 +102,16 @@ make test          # run test suite
 
 Set `rerank: true` to enable cross-encoder reranking. The cross-encoder scores up to `RERANKER_TOP_K` (default 20) candidates from hybrid search and returns the top `top_k` reranked results.
 
+`/query/eval` takes the same body plus `relevant_doc_ids`, a list of chunk IDs used to compute hit rate and MRR against ground truth:
+
+```json
+{
+  "query": "What is overfitting?",
+  "relevant_doc_ids": ["abc123", "def456"],
+  "top_k": 5
+}
+```
+
 ## Citation Tracking
 
 Each `/query` response includes a `citations` field mapping answer sentences to their source chunks:
