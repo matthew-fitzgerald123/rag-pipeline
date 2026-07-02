@@ -56,6 +56,8 @@ flowchart TD
 
 ## Setup
 
+Requires PostgreSQL running locally. Runs natively on Apple Silicon via mlx-lm, no GPU or torch required.
+
 ```bash
 createdb rag_pipeline
 pip install -r requirements.txt
