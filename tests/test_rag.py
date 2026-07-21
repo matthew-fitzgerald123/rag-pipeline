@@ -93,10 +93,33 @@ def test_eval_summary():
     assert "total_queries" in data
     assert data["total_queries"] > 0
 
+def test_eval_summary_includes_avg_ndcg():
+    # Drive a /query/eval request so ndcg is logged, then confirm summary surfaces it.
+    r_q = client.post("/query", json={"query": "overfitting", "top_k": 1})
+    chunk_id = r_q.json()["chunks"][0]["chunk_id"]
+    client.post("/query/eval", json={
+        "query": "What is overfitting?",
+        "relevant_doc_ids": [chunk_id],
+        "top_k": 3,
+    })
+    r = client.get("/eval/summary")
+    assert r.status_code == 200
+    data = r.json()
+    assert "avg_ndcg" in data
+    assert data["avg_ndcg"] is not None
+
 def test_eval_history():
     r = client.get("/eval/history?limit=5")
     assert r.status_code == 200
     assert isinstance(r.json(), list)
+
+def test_eval_history_includes_ndcg_field():
+    r = client.get("/eval/history?limit=5")
+    assert r.status_code == 200
+    rows = r.json()
+    assert len(rows) > 0
+    for row in rows:
+        assert "ndcg" in row
 
 def test_empty_query_still_returns():
     r = client.post("/query", json={"query": "xyzzy nonsense query 12345", "top_k": 3})

@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator
 import os
 from dotenv import load_dotenv
 
+from sqlalchemy import text
 from app.database import get_db, engine
 from app.models import Base, QueryLog
 from app.vector_store import vector_store
@@ -18,6 +19,10 @@ from app.citations import extract_citations
 
 load_dotenv()
 Base.metadata.create_all(bind=engine)
+
+with engine.connect() as _conn:
+    _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS ndcg FLOAT"))
+    _conn.commit()
 
 
 @asynccontextmanager
@@ -118,6 +123,7 @@ def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
         retrieved_ids=retrieved_ids,
         hit_rate=hr,
         mrr=mrr,
+        ndcg=ndcg,
         faithfulness=f,
     )
     db.add(log)
@@ -153,6 +159,7 @@ def eval_summary(db: Session = Depends(get_db)):
         "avg_faithfulness":     avg([l.faithfulness for l in logs]),
         "avg_hit_rate":         avg([l.hit_rate for l in logs]),
         "avg_mrr":              avg([l.mrr for l in logs]),
+        "avg_ndcg":             avg([l.ndcg for l in logs]),
         "avg_answer_relevance": avg([answer_relevance(l.query, l.answer) for l in logs]),
     }
 
@@ -171,6 +178,7 @@ def eval_history(limit: int = 20, db: Session = Depends(get_db)):
             "faithfulness": l.faithfulness,
             "hit_rate":     l.hit_rate,
             "mrr":          l.mrr,
+            "ndcg":         l.ndcg,
             "created_at":   str(l.created_at),
         }
         for l in logs
