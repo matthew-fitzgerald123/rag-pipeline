@@ -12,7 +12,7 @@ from app.database import get_db, engine
 from app.models import Base, QueryLog
 from app.vector_store import vector_store
 from app.generator import generator
-from app.evaluator import hit_rate, mean_reciprocal_rank, faithfulness, answer_relevance
+from app.evaluator import hit_rate, mean_reciprocal_rank, ndcg_at_k, faithfulness, answer_relevance
 from app.reranker import rerank, RERANKER_TOP_K
 from app.citations import extract_citations
 
@@ -106,10 +106,11 @@ def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
     answer = generator.answer(req.query, chunks)
     retrieved_ids = [c["chunk_id"] for c in chunks]
 
-    hr  = hit_rate(retrieved_ids, req.relevant_doc_ids)
-    mrr = mean_reciprocal_rank(retrieved_ids, req.relevant_doc_ids)
-    f   = faithfulness(answer, chunks)
-    ar  = answer_relevance(req.query, answer)
+    hr   = hit_rate(retrieved_ids, req.relevant_doc_ids)
+    mrr  = mean_reciprocal_rank(retrieved_ids, req.relevant_doc_ids)
+    ndcg = ndcg_at_k(retrieved_ids, req.relevant_doc_ids, req.top_k)
+    f    = faithfulness(answer, chunks)
+    ar   = answer_relevance(req.query, answer)
 
     log = QueryLog(
         query=req.query,
@@ -129,6 +130,7 @@ def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
         "eval": {
             "hit_rate":         hr,
             "mrr":              mrr,
+            "ndcg":             ndcg,
             "faithfulness":     f,
             "answer_relevance": ar,
         },

@@ -143,6 +143,7 @@ All metrics are implemented manually without RAGAS:
 
 - **Hit rate**: fraction of relevant docs appearing in retrieved results
 - **MRR**: mean reciprocal rank, rewards finding the right doc early
+- **NDCG@k**: normalized discounted cumulative gain, rewards ranking all relevant docs near the top, not just retrieving them (binary relevance, log2 rank discount)
 - **Faithfulness**: fraction of answer sentences grounded in retrieved context (token overlap proxy)
 - **Answer relevance**: token overlap between query terms and answer
 

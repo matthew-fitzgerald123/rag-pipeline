@@ -50,8 +50,41 @@ def test_query_eval_with_ground_truth():
     data = r.json()
     assert "hit_rate" in data["eval"]
     assert "mrr" in data["eval"]
+    assert "ndcg" in data["eval"]
     assert 0.0 <= data["eval"]["hit_rate"] <= 1.0
     assert 0.0 <= data["eval"]["mrr"] <= 1.0
+    assert 0.0 <= data["eval"]["ndcg"] <= 1.0
+
+
+def test_ndcg_perfect_ranking():
+    from app.evaluator import ndcg_at_k
+    # All relevant docs at the very top gives the ideal ranking.
+    assert ndcg_at_k(["a", "b", "c"], ["a", "b"], k=3) == 1.0
+
+
+def test_ndcg_rewards_higher_ranks():
+    from app.evaluator import ndcg_at_k
+    top = ndcg_at_k(["a", "x", "y"], ["a"], k=3)
+    bottom = ndcg_at_k(["x", "y", "a"], ["a"], k=3)
+    assert top == 1.0
+    assert bottom < top
+    assert bottom > 0.0
+
+
+def test_ndcg_no_relevant_retrieved_is_zero():
+    from app.evaluator import ndcg_at_k
+    assert ndcg_at_k(["x", "y", "z"], ["a"], k=3) == 0.0
+
+
+def test_ndcg_empty_relevant_is_zero():
+    from app.evaluator import ndcg_at_k
+    assert ndcg_at_k(["a", "b"], [], k=3) == 0.0
+
+
+def test_ndcg_respects_k_cutoff():
+    from app.evaluator import ndcg_at_k
+    # The single relevant doc sits at rank 3, outside k=2, so it cannot contribute.
+    assert ndcg_at_k(["x", "y", "a"], ["a"], k=2) == 0.0
 
 def test_eval_summary():
     r = client.get("/eval/summary")
