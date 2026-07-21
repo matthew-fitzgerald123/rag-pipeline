@@ -22,5 +22,6 @@ class QueryLog(Base):
     retrieved_ids = Column(JSON, default=[])
     hit_rate      = Column(Float, nullable=True)
     mrr           = Column(Float, nullable=True)
+    ndcg          = Column(Float, nullable=True)
     faithfulness  = Column(Float, nullable=True)
     created_at    = Column(DateTime, default=datetime.utcnow, index=True)
