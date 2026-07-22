@@ -568,3 +568,144 @@ def test_extract_citations_sentence_structure_has_required_keys():
         assert "chunk_id" in citation
         assert "title" in citation
         assert "overlap" in citation
+
+
+# ── _tokenize unit tests ──────────────────────────────────
+
+def test_tokenize_lowercases_input():
+    from app.vector_store import _tokenize
+    assert _tokenize("Hello World") == ["hello", "world"]
+
+
+def test_tokenize_strips_punctuation():
+    from app.vector_store import _tokenize
+    assert _tokenize("learning, training.") == ["learning", "training"]
+
+
+def test_tokenize_returns_list_of_strings():
+    from app.vector_store import _tokenize
+    result = _tokenize("supervised learning")
+    assert isinstance(result, list)
+    assert all(isinstance(t, str) for t in result)
+
+
+def test_tokenize_empty_string_returns_empty_list():
+    from app.vector_store import _tokenize
+    assert _tokenize("") == []
+
+
+def test_tokenize_preserves_numbers_as_tokens():
+    from app.vector_store import _tokenize
+    assert "42" in _tokenize("step 42")
+
+
+def test_tokenize_punctuation_only_returns_empty_list():
+    from app.vector_store import _tokenize
+    assert _tokenize("!!! ???") == []
+
+
+def test_tokenize_mixed_case_and_punctuation():
+    from app.vector_store import _tokenize
+    assert _tokenize("Over-fitting occurs.") == ["over", "fitting", "occurs"]
+
+
+# ── rerank() unit tests ───────────────────────────────────
+
+def test_rerank_empty_candidates_returns_empty():
+    from app.reranker import rerank
+    from unittest.mock import patch
+    with patch("app.reranker._get_model") as mock_get:
+        result = rerank("query", [], top_k=3)
+    assert result == []
+    mock_get.assert_not_called()
+
+
+def test_rerank_annotates_chunks_with_rerank_score():
+    from app.reranker import rerank
+    from unittest.mock import patch
+    candidates = [
+        {"chunk_id": "c1", "text": "text one"},
+        {"chunk_id": "c2", "text": "text two"},
+    ]
+    with patch("app.reranker._get_model") as mock_get:
+        mock_get.return_value.predict.return_value = [0.9, 0.3]
+        result = rerank("query", candidates, top_k=2)
+    for chunk in result:
+        assert "rerank_score" in chunk
+        assert isinstance(chunk["rerank_score"], float)
+
+
+def test_rerank_sorts_by_score_descending():
+    from app.reranker import rerank
+    from unittest.mock import patch
+    candidates = [
+        {"chunk_id": "c1", "text": "low relevance text"},
+        {"chunk_id": "c2", "text": "high relevance text"},
+        {"chunk_id": "c3", "text": "medium relevance text"},
+    ]
+    with patch("app.reranker._get_model") as mock_get:
+        mock_get.return_value.predict.return_value = [0.2, 0.9, 0.5]
+        result = rerank("query", candidates, top_k=3)
+    scores = [r["rerank_score"] for r in result]
+    assert scores == sorted(scores, reverse=True)
+    assert result[0]["chunk_id"] == "c2"
+
+
+def test_rerank_returns_top_k_results():
+    from app.reranker import rerank
+    from unittest.mock import patch
+    candidates = [{"chunk_id": f"c{i}", "text": f"text {i}"} for i in range(5)]
+    with patch("app.reranker._get_model") as mock_get:
+        mock_get.return_value.predict.return_value = [0.1, 0.5, 0.9, 0.3, 0.7]
+        result = rerank("query", candidates, top_k=3)
+    assert len(result) == 3
+
+
+def test_rerank_top_k_larger_than_candidates_returns_all():
+    from app.reranker import rerank
+    from unittest.mock import patch
+    candidates = [
+        {"chunk_id": "c1", "text": "text one"},
+        {"chunk_id": "c2", "text": "text two"},
+    ]
+    with patch("app.reranker._get_model") as mock_get:
+        mock_get.return_value.predict.return_value = [0.8, 0.4]
+        result = rerank("query", candidates, top_k=10)
+    assert len(result) == 2
+
+
+def test_rerank_score_rounded_to_four_decimal_places():
+    from app.reranker import rerank
+    from unittest.mock import patch
+    candidates = [{"chunk_id": "c1", "text": "some text"}]
+    with patch("app.reranker._get_model") as mock_get:
+        mock_get.return_value.predict.return_value = [0.123456789]
+        result = rerank("query", candidates, top_k=1)
+    score = result[0]["rerank_score"]
+    assert score == round(score, 4)
+
+
+def test_rerank_preserves_other_chunk_fields():
+    from app.reranker import rerank
+    from unittest.mock import patch
+    candidates = [{"chunk_id": "c1", "text": "text", "score": 0.75, "metadata": {"title": "doc"}}]
+    with patch("app.reranker._get_model") as mock_get:
+        mock_get.return_value.predict.return_value = [0.6]
+        result = rerank("query", candidates, top_k=1)
+    assert result[0]["chunk_id"] == "c1"
+    assert result[0]["score"] == 0.75
+    assert result[0]["metadata"] == {"title": "doc"}
+
+
+def test_rerank_best_scoring_chunk_is_first():
+    from app.reranker import rerank
+    from unittest.mock import patch
+    candidates = [
+        {"chunk_id": "low",  "text": "weakly related"},
+        {"chunk_id": "high", "text": "strongly related"},
+    ]
+    with patch("app.reranker._get_model") as mock_get:
+        mock_get.return_value.predict.return_value = [0.1, 0.95]
+        result = rerank("query", candidates, top_k=2)
+    assert result[0]["chunk_id"] == "high"
+    assert result[1]["chunk_id"] == "low"
