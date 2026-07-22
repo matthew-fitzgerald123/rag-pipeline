@@ -243,3 +243,130 @@ def test_citation_extraction_unit():
     result = extract_citations(answer, chunks, threshold=0.2)
     assert len(result) >= 1
     assert result[0]["citations"][0]["chunk_id"] == "c1"
+
+
+# ── Chunker unit tests ────────────────────────────────────
+
+def test_chunker_short_text_produces_single_chunk():
+    from app.chunker import chunk_document
+    chunks = chunk_document("doc1", "Hello world", {"title": "test"})
+    assert len(chunks) == 1
+    assert chunks[0].chunk_id == "doc1_chunk_0"
+    assert chunks[0].text == "Hello world"
+    assert chunks[0].doc_id == "doc1"
+
+
+def test_chunker_empty_text_produces_no_chunks():
+    from app.chunker import chunk_document
+    assert chunk_document("doc1", "   ", {}) == []
+
+
+def test_chunker_preserves_metadata_fields():
+    from app.chunker import chunk_document
+    chunks = chunk_document("doc1", "Some text", {"title": "foo"})
+    assert chunks[0].metadata["title"] == "foo"
+    assert chunks[0].metadata["doc_id"] == "doc1"
+    assert chunks[0].metadata["chunk_index"] == 0
+
+
+def test_chunker_long_text_produces_multiple_chunks():
+    from app.chunker import chunk_document
+    text = "A" * 600
+    chunks = chunk_document("doc1", text, {}, chunk_size=512, overlap=64)
+    assert len(chunks) == 2
+
+
+def test_chunker_chunk_ids_are_sequential():
+    from app.chunker import chunk_document
+    chunks = chunk_document("doc1", "x" * 2000, {}, chunk_size=512, overlap=64)
+    for i, chunk in enumerate(chunks):
+        assert chunk.chunk_id == f"doc1_chunk_{i}"
+
+
+def test_chunker_adjacent_chunks_share_overlap_content():
+    from app.chunker import chunk_document
+    # chunk[0] covers [0:512], chunk[1] covers [448:600]
+    # so text[448:512] must be a suffix of chunk[0] and prefix of chunk[1]
+    text = "A" * 600
+    chunks = chunk_document("doc1", text, {}, chunk_size=512, overlap=64)
+    overlap_region = text[448:512]
+    assert chunks[0].text.endswith(overlap_region)
+    assert chunks[1].text.startswith(overlap_region)
+
+
+def test_chunker_custom_chunk_size_and_overlap():
+    from app.chunker import chunk_document
+    text = "word " * 40  # ~200 chars
+    chunks = chunk_document("doc1", text, {}, chunk_size=100, overlap=20)
+    # step = 100-20 = 80; text len ~200, so we expect 3 chunks
+    assert len(chunks) >= 2
+    for chunk in chunks:
+        assert len(chunk.text) <= 100
+
+
+# ── Reranker unit tests ───────────────────────────────────
+
+def test_rerank_empty_candidates_returns_empty():
+    from app.reranker import rerank
+    assert rerank("any query", [], top_k=5) == []
+
+
+def test_rerank_sorts_candidates_by_score_descending():
+    from unittest.mock import patch
+    import numpy as np
+    from app.reranker import rerank
+
+    candidates = [
+        {"chunk_id": "a", "text": "low relevance"},
+        {"chunk_id": "b", "text": "high relevance"},
+        {"chunk_id": "c", "text": "medium relevance"},
+    ]
+    with patch("app.reranker._get_model") as mock_get_model:
+        mock_get_model.return_value.predict.return_value = np.array([0.1, 0.9, 0.5])
+        result = rerank("query", candidates, top_k=3)
+
+    assert result[0]["chunk_id"] == "b"
+    assert result[1]["chunk_id"] == "c"
+    assert result[2]["chunk_id"] == "a"
+
+
+def test_rerank_respects_top_k():
+    from unittest.mock import patch
+    import numpy as np
+    from app.reranker import rerank
+
+    candidates = [{"chunk_id": str(i), "text": f"text {i}"} for i in range(5)]
+    with patch("app.reranker._get_model") as mock_get_model:
+        mock_get_model.return_value.predict.return_value = np.array([0.5, 0.1, 0.9, 0.3, 0.7])
+        result = rerank("query", candidates, top_k=2)
+
+    assert len(result) == 2
+    assert result[0]["chunk_id"] == "2"  # score 0.9
+    assert result[1]["chunk_id"] == "4"  # score 0.7
+
+
+def test_rerank_adds_rerank_score_field():
+    from unittest.mock import patch
+    import numpy as np
+    from app.reranker import rerank
+
+    candidates = [{"chunk_id": "x", "text": "some text"}]
+    with patch("app.reranker._get_model") as mock_get_model:
+        mock_get_model.return_value.predict.return_value = np.array([0.75])
+        result = rerank("query", candidates, top_k=1)
+
+    assert "rerank_score" in result[0]
+    assert result[0]["rerank_score"] == 0.75
+
+
+def test_rerank_top_k_larger_than_candidates_returns_all():
+    from unittest.mock import patch
+    import numpy as np
+    from app.reranker import rerank
+
+    candidates = [{"chunk_id": "a", "text": "only one"}]
+    with patch("app.reranker._get_model") as mock_get_model:
+        mock_get_model.return_value.predict.return_value = np.array([0.6])
+        result = rerank("query", candidates, top_k=10)
+
+    assert len(result) == 1
