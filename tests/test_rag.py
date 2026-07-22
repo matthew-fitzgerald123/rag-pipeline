@@ -121,6 +121,102 @@ def test_eval_history_includes_ndcg_field():
     for row in rows:
         assert "ndcg" in row
 
+# ── Evaluator unit tests ──────────────────────────────────
+
+def test_hit_rate_all_relevant_retrieved():
+    from app.evaluator import hit_rate
+    assert hit_rate(["a", "b", "c"], ["a", "b"]) == 1.0
+
+def test_hit_rate_partial():
+    from app.evaluator import hit_rate
+    assert hit_rate(["a", "x", "y"], ["a", "b"]) == 0.5
+
+def test_hit_rate_none_retrieved():
+    from app.evaluator import hit_rate
+    assert hit_rate(["x", "y", "z"], ["a", "b"]) == 0.0
+
+def test_hit_rate_empty_relevant_is_zero():
+    from app.evaluator import hit_rate
+    assert hit_rate(["a", "b"], []) == 0.0
+
+
+def test_mrr_found_at_rank_one():
+    from app.evaluator import mean_reciprocal_rank
+    assert mean_reciprocal_rank(["a", "b", "c"], ["a"]) == 1.0
+
+def test_mrr_found_at_rank_two():
+    from app.evaluator import mean_reciprocal_rank
+    assert mean_reciprocal_rank(["x", "a", "c"], ["a"]) == 0.5
+
+def test_mrr_not_found():
+    from app.evaluator import mean_reciprocal_rank
+    assert mean_reciprocal_rank(["x", "y", "z"], ["a"]) == 0.0
+
+def test_mrr_empty_relevant_is_zero():
+    from app.evaluator import mean_reciprocal_rank
+    assert mean_reciprocal_rank(["a", "b"], []) == 0.0
+
+
+def test_faithfulness_fully_supported():
+    from app.evaluator import faithfulness
+    chunks = [{"text": "Supervised learning trains models on labeled data examples."}]
+    answer = "Supervised learning trains models on labeled data."
+    assert faithfulness(answer, chunks) == 1.0
+
+def test_faithfulness_not_supported():
+    from app.evaluator import faithfulness
+    chunks = [{"text": "Deep learning uses neural networks."}]
+    answer = "Quantum mechanics leverages superposition states."
+    assert faithfulness(answer, chunks) == 0.0
+
+def test_faithfulness_empty_answer_is_zero():
+    from app.evaluator import faithfulness
+    assert faithfulness("", [{"text": "some context text here"}]) == 0.0
+
+
+def test_answer_relevance_full_overlap():
+    from app.evaluator import answer_relevance
+    assert answer_relevance("overfitting regularization", "overfitting regularization prevents model overfitting") == 1.0
+
+def test_answer_relevance_no_overlap():
+    from app.evaluator import answer_relevance
+    assert answer_relevance("overfitting regularization", "cats dogs unrelated content") == 0.0
+
+def test_answer_relevance_stopwords_only_query_is_zero():
+    from app.evaluator import answer_relevance
+    assert answer_relevance("the a an", "some answer text here") == 0.0
+
+
+# ── /query/stream SSE integration test ───────────────────
+
+def test_query_stream_returns_sse():
+    r = client.post("/query/stream", json={
+        "query": "What is supervised learning?",
+        "top_k": 3,
+    })
+    assert r.status_code == 200
+    assert "text/event-stream" in r.headers["content-type"]
+    body = r.content.decode()
+    assert "data:" in body
+    assert "[DONE]" in body
+
+def test_query_stream_events_are_valid_json_or_done():
+    r = client.post("/query/stream", json={
+        "query": "What is overfitting?",
+        "top_k": 3,
+    })
+    assert r.status_code == 200
+    import json
+    for line in r.content.decode().splitlines():
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if payload == "[DONE]":
+            break
+        parsed = json.loads(payload)
+        assert "token" in parsed
+
+
 def test_empty_query_still_returns():
     r = client.post("/query", json={"query": "xyzzy nonsense query 12345", "top_k": 3})
     assert r.status_code in [200, 404]
