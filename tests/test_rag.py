@@ -266,3 +266,113 @@ def test_query_chunks_expose_dense_and_bm25_scores():
         assert "score" in chunk, "chunk is missing fused score"
         assert 0.0 <= chunk["dense_score"] <= 1.0
         assert 0.0 <= chunk["bm25_score"] <= 1.0
+
+
+# ── hit_rate unit tests ───────────────────────────────────
+
+def test_hit_rate_all_found():
+    from app.evaluator import hit_rate
+    assert hit_rate(["a", "b", "c"], ["a", "b"]) == 1.0
+
+
+def test_hit_rate_none_found():
+    from app.evaluator import hit_rate
+    assert hit_rate(["x", "y", "z"], ["a", "b"]) == 0.0
+
+
+def test_hit_rate_partial():
+    from app.evaluator import hit_rate
+    result = hit_rate(["a", "x", "y"], ["a", "b"])
+    assert result == 0.5
+
+
+def test_hit_rate_empty_relevant():
+    from app.evaluator import hit_rate
+    assert hit_rate(["a", "b"], []) == 0.0
+
+
+# ── mean_reciprocal_rank unit tests ──────────────────────
+
+def test_mrr_first_rank_is_one():
+    from app.evaluator import mean_reciprocal_rank
+    assert mean_reciprocal_rank(["a", "b", "c"], ["a"]) == 1.0
+
+
+def test_mrr_second_rank_is_half():
+    from app.evaluator import mean_reciprocal_rank
+    assert mean_reciprocal_rank(["x", "a", "c"], ["a"]) == 0.5
+
+
+def test_mrr_no_relevant_found():
+    from app.evaluator import mean_reciprocal_rank
+    assert mean_reciprocal_rank(["x", "y", "z"], ["a"]) == 0.0
+
+
+def test_mrr_uses_first_hit():
+    from app.evaluator import mean_reciprocal_rank
+    # Both "a" and "b" are relevant; the first hit ("b" at rank 2) determines MRR.
+    assert mean_reciprocal_rank(["x", "b", "a"], ["a", "b"]) == 0.5
+
+
+# ── faithfulness unit tests ───────────────────────────────
+
+def test_faithfulness_grounded_sentence():
+    from app.evaluator import faithfulness
+    chunks = [{"text": "Supervised learning trains models on labeled data to make predictions."}]
+    answer = "Supervised learning trains on labeled data."
+    score = faithfulness(answer, chunks)
+    assert score == 1.0
+
+
+def test_faithfulness_ungrounded_sentence():
+    from app.evaluator import faithfulness
+    chunks = [{"text": "Quantum mechanics describes subatomic particles."}]
+    answer = "Neural networks learn hierarchical representations."
+    score = faithfulness(answer, chunks)
+    assert score == 0.0
+
+
+def test_faithfulness_empty_answer():
+    from app.evaluator import faithfulness
+    assert faithfulness("", [{"text": "some context text"}]) == 0.0
+
+
+def test_faithfulness_empty_context():
+    from app.evaluator import faithfulness
+    assert faithfulness("The model trains on data.", []) == 0.0
+
+
+def test_faithfulness_partial_grounding():
+    from app.evaluator import faithfulness
+    chunks = [{"text": "Overfitting occurs when a model memorizes training data."}]
+    # First sentence overlaps context; second has no connection.
+    answer = "Overfitting occurs when a model memorizes training data. Quantum physics is unrelated."
+    score = faithfulness(answer, chunks)
+    assert 0.0 < score < 1.0
+
+
+# ── answer_relevance unit tests ───────────────────────────
+
+def test_answer_relevance_full_overlap():
+    from app.evaluator import answer_relevance
+    # Non-stopword query terms all appear in answer.
+    score = answer_relevance("overfitting neural network", "overfitting neural network training")
+    assert score == 1.0
+
+
+def test_answer_relevance_no_overlap():
+    from app.evaluator import answer_relevance
+    score = answer_relevance("gradient descent learning rate", "quantum mechanics wave function")
+    assert score == 0.0
+
+
+def test_answer_relevance_partial():
+    from app.evaluator import answer_relevance
+    score = answer_relevance("overfitting regularization dropout", "overfitting reduces variance")
+    assert 0.0 < score < 1.0
+
+
+def test_answer_relevance_stopwords_only_query():
+    from app.evaluator import answer_relevance
+    # Query collapses to empty set after stopword removal.
+    assert answer_relevance("the is a", "some answer text") == 0.0
