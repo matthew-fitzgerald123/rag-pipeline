@@ -709,3 +709,131 @@ def test_rerank_best_scoring_chunk_is_first():
         result = rerank("query", candidates, top_k=2)
     assert result[0]["chunk_id"] == "high"
     assert result[1]["chunk_id"] == "low"
+
+
+# ── _build_prompt unit tests ──────────────────────────────
+
+def test_build_prompt_contains_query():
+    from app.generator import _build_prompt
+    chunks = [{"text": "Some context text."}]
+    prompt = _build_prompt("What is overfitting?", chunks)
+    assert "What is overfitting?" in prompt
+
+
+def test_build_prompt_contains_instruction_text():
+    from app.generator import _build_prompt
+    prompt = _build_prompt("query", [{"text": "ctx"}])
+    assert "Answer the question using only the context below" in prompt
+
+
+def test_build_prompt_numbers_context_from_one():
+    from app.generator import _build_prompt
+    chunks = [{"text": "first chunk"}]
+    prompt = _build_prompt("q", chunks)
+    assert "[1] first chunk" in prompt
+
+
+def test_build_prompt_multiple_chunks_numbered_sequentially():
+    from app.generator import _build_prompt
+    chunks = [{"text": "alpha"}, {"text": "beta"}, {"text": "gamma"}]
+    prompt = _build_prompt("q", chunks)
+    assert "[1] alpha" in prompt
+    assert "[2] beta" in prompt
+    assert "[3] gamma" in prompt
+
+
+def test_build_prompt_includes_all_chunk_texts():
+    from app.generator import _build_prompt
+    chunks = [{"text": "supervised learning"}, {"text": "neural networks"}]
+    prompt = _build_prompt("q", chunks)
+    assert "supervised learning" in prompt
+    assert "neural networks" in prompt
+
+
+def test_build_prompt_empty_chunks_produces_valid_prompt():
+    from app.generator import _build_prompt
+    prompt = _build_prompt("What is a tree?", [])
+    assert "What is a tree?" in prompt
+    assert "Answer the question using only the context below" in prompt
+
+
+def test_build_prompt_wraps_in_inst_tags():
+    from app.generator import _build_prompt
+    prompt = _build_prompt("q", [{"text": "ctx"}])
+    assert prompt.startswith("[INST]")
+    assert prompt.strip().endswith("[/INST]")
+
+
+def test_build_prompt_question_appears_after_context():
+    from app.generator import _build_prompt
+    chunks = [{"text": "Context content here."}]
+    prompt = _build_prompt("My query", chunks)
+    context_pos = prompt.index("Context content here.")
+    query_pos = prompt.index("My query")
+    assert query_pos > context_pos
+
+
+# ── VectorStore._bm25_query unit tests ───────────────────
+
+def _make_mock_store(bm25=None, ids=None):
+    from app.vector_store import VectorStore
+    store = object.__new__(VectorStore)
+    store._bm25 = bm25
+    store._bm25_ids = ids if ids is not None else []
+    return store
+
+
+def test_bm25_query_returns_empty_when_bm25_is_none():
+    store = _make_mock_store(bm25=None, ids=["c1"])
+    assert store._bm25_query("query", top_k=5) == {}
+
+
+def test_bm25_query_returns_empty_when_ids_is_empty():
+    from unittest.mock import MagicMock
+    store = _make_mock_store(bm25=MagicMock(), ids=[])
+    assert store._bm25_query("query", top_k=5) == {}
+
+
+def test_bm25_query_normalizes_so_max_score_is_one():
+    from unittest.mock import MagicMock
+    import numpy as np
+    bm25 = MagicMock()
+    bm25.get_scores.return_value = np.array([0.0, 3.0, 6.0])
+    store = _make_mock_store(bm25=bm25, ids=["c1", "c2", "c3"])
+    result = store._bm25_query("query", top_k=5)
+    assert max(result.values()) == 1.0
+
+
+def test_bm25_query_filters_out_zero_scores():
+    from unittest.mock import MagicMock
+    import numpy as np
+    bm25 = MagicMock()
+    bm25.get_scores.return_value = np.array([0.0, 5.0])
+    store = _make_mock_store(bm25=bm25, ids=["c_zero", "c_nonzero"])
+    result = store._bm25_query("query", top_k=5)
+    assert "c_zero" not in result
+    assert "c_nonzero" in result
+
+
+def test_bm25_query_rounds_scores_to_four_decimal_places():
+    from unittest.mock import MagicMock
+    import numpy as np
+    bm25 = MagicMock()
+    bm25.get_scores.return_value = np.array([1.0, 3.0])
+    store = _make_mock_store(bm25=bm25, ids=["c1", "c2"])
+    result = store._bm25_query("query", top_k=5)
+    for score in result.values():
+        assert score == round(score, 4)
+
+
+def test_bm25_query_returns_dict_mapping_ids_to_floats():
+    from unittest.mock import MagicMock
+    import numpy as np
+    bm25 = MagicMock()
+    bm25.get_scores.return_value = np.array([2.0, 4.0])
+    store = _make_mock_store(bm25=bm25, ids=["doc_a", "doc_b"])
+    result = store._bm25_query("query", top_k=5)
+    assert isinstance(result, dict)
+    assert "doc_a" in result
+    assert "doc_b" in result
+    assert all(isinstance(v, float) for v in result.values())
