@@ -147,3 +147,75 @@ def test_citation_extraction_unit():
     result = extract_citations(answer, chunks, threshold=0.2)
     assert len(result) >= 1
     assert result[0]["citations"][0]["chunk_id"] == "c1"
+
+
+# ── Reranking integration tests ───────────────────────────
+
+def test_query_with_rerank_enabled_returns_reranked_true():
+    r = client.post("/query", json={
+        "query": "What is supervised learning?",
+        "top_k": 3,
+        "rerank": True,
+    })
+    assert r.status_code == 200
+    data = r.json()
+    assert data["reranked"] is True
+
+
+def test_query_with_rerank_enabled_chunks_have_rerank_score():
+    r = client.post("/query", json={
+        "query": "What is overfitting?",
+        "top_k": 3,
+        "rerank": True,
+    })
+    assert r.status_code == 200
+    chunks = r.json()["chunks"]
+    assert len(chunks) > 0
+    for chunk in chunks:
+        assert "rerank_score" in chunk
+        assert isinstance(chunk["rerank_score"], float)
+
+
+def test_query_without_rerank_returns_reranked_false():
+    r = client.post("/query", json={
+        "query": "What is supervised learning?",
+        "top_k": 3,
+        "rerank": False,
+    })
+    assert r.status_code == 200
+    assert r.json()["reranked"] is False
+
+
+def test_query_eval_with_rerank_enabled():
+    r = client.post("/query", json={"query": "overfitting", "top_k": 1})
+    chunk_id = r.json()["chunks"][0]["chunk_id"]
+
+    r = client.post("/query/eval", json={
+        "query": "What is overfitting?",
+        "relevant_doc_ids": [chunk_id],
+        "top_k": 3,
+        "rerank": True,
+    })
+    assert r.status_code == 200
+    data = r.json()
+    assert "hit_rate" in data["eval"]
+    assert "mrr" in data["eval"]
+    assert "ndcg" in data["eval"]
+
+
+# ── Hybrid score fields ───────────────────────────────────
+
+def test_query_chunks_expose_dense_and_bm25_scores():
+    r = client.post("/query", json={
+        "query": "What is gradient descent?",
+        "top_k": 3,
+    })
+    assert r.status_code == 200
+    chunks = r.json()["chunks"]
+    assert len(chunks) > 0
+    for chunk in chunks:
+        assert "dense_score" in chunk, "chunk is missing dense_score"
+        assert "bm25_score" in chunk, "chunk is missing bm25_score"
+        assert "score" in chunk, "chunk is missing fused score"
+        assert 0.0 <= chunk["dense_score"] <= 1.0
+        assert 0.0 <= chunk["bm25_score"] <= 1.0
