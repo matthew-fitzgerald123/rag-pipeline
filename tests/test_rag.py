@@ -546,3 +546,111 @@ def test_vs_hybrid_query_dense_only_when_bm25_empty():
     assert results[0]["chunk_id"] == "x"
     assert results[0]["score"] == round(HYBRID_ALPHA * 0.7, 4)
     assert results[0]["bm25_score"] == 0.0
+
+
+# ── Generator prompt construction unit tests ──────────────
+
+def test_build_prompt_wraps_in_inst_tags():
+    from app.generator import _build_prompt
+    prompt = _build_prompt("What is ML?", [{"text": "ML is machine learning."}])
+    assert prompt.startswith("[INST]")
+    assert prompt.endswith("[/INST]")
+
+
+def test_build_prompt_contains_query():
+    from app.generator import _build_prompt
+    query = "What is supervised learning?"
+    prompt = _build_prompt(query, [{"text": "some context"}])
+    assert query in prompt
+
+
+def test_build_prompt_numbers_chunks():
+    from app.generator import _build_prompt
+    chunks = [{"text": "first chunk"}, {"text": "second chunk"}]
+    prompt = _build_prompt("query", chunks)
+    assert "[1] first chunk" in prompt
+    assert "[2] second chunk" in prompt
+
+
+def test_build_prompt_includes_all_chunk_texts():
+    from app.generator import _build_prompt
+    chunks = [{"text": "alpha"}, {"text": "beta"}, {"text": "gamma"}]
+    prompt = _build_prompt("query", chunks)
+    for chunk in chunks:
+        assert chunk["text"] in prompt
+
+
+def test_build_prompt_empty_chunks_still_valid():
+    from app.generator import _build_prompt
+    prompt = _build_prompt("query?", [])
+    assert "[INST]" in prompt
+    assert "query?" in prompt
+
+
+def test_build_prompt_contains_question_label():
+    from app.generator import _build_prompt
+    prompt = _build_prompt("What is overfitting?", [{"text": "context"}])
+    assert "Question:" in prompt
+    assert "What is overfitting?" in prompt
+
+
+def test_build_prompt_instructs_context_only():
+    from app.generator import _build_prompt
+    prompt = _build_prompt("query", [{"text": "context"}])
+    assert "only the context" in prompt
+
+
+# ── Citation helper unit tests ────────────────────────────
+
+def test_citations_tokens_removes_stopwords():
+    from app.citations import _tokens
+    result = _tokens("the cat sat on the mat")
+    assert "the" not in result
+    assert "on" not in result
+    assert "cat" in result
+    assert "mat" in result
+
+
+def test_citations_tokens_lowercases_input():
+    from app.citations import _tokens
+    result = _tokens("Machine Learning")
+    assert "machine" in result
+    assert "Machine" not in result
+
+
+def test_citations_tokens_empty_string_returns_empty():
+    from app.citations import _tokens
+    assert _tokens("") == set()
+
+
+def test_citations_tokens_stopwords_only_returns_empty():
+    from app.citations import _tokens
+    assert _tokens("the a an is are") == set()
+
+
+def test_citations_overlap_identical_sets_is_one():
+    from app.citations import _overlap
+    tokens = {"cat", "sat", "mat"}
+    assert _overlap(tokens, tokens) == 1.0
+
+
+def test_citations_overlap_no_common_is_zero():
+    from app.citations import _overlap
+    assert _overlap({"cat"}, {"dog"}) == 0.0
+
+
+def test_citations_overlap_partial():
+    from app.citations import _overlap
+    a = {"cat", "sat"}
+    b = {"cat", "dog"}
+    assert _overlap(a, b) == 0.5
+
+
+def test_citations_overlap_empty_a_is_zero():
+    from app.citations import _overlap
+    assert _overlap(set(), {"cat"}) == 0.0
+
+
+def test_citations_overlap_empty_b_is_zero():
+    from app.citations import _overlap
+    assert _overlap({"cat"}, set()) == 0.0
