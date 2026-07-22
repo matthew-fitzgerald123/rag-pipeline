@@ -205,6 +205,53 @@ def test_query_eval_with_rerank_enabled():
 
 # ── Hybrid score fields ───────────────────────────────────
 
+# ── answer_relevance persistence ─────────────────────────
+
+def test_query_response_eval_includes_answer_relevance():
+    r = client.post("/query", json={"query": "What is supervised learning?", "top_k": 3})
+    assert r.status_code == 200
+    data = r.json()
+    assert "answer_relevance" in data["eval"]
+    assert isinstance(data["eval"]["answer_relevance"], float)
+    assert 0.0 <= data["eval"]["answer_relevance"] <= 1.0
+
+
+def test_eval_history_includes_answer_relevance_field():
+    client.post("/query", json={"query": "What is gradient descent?", "top_k": 3})
+    r = client.get("/eval/history?limit=5")
+    assert r.status_code == 200
+    rows = r.json()
+    assert len(rows) > 0
+    for row in rows:
+        assert "answer_relevance" in row
+
+
+def test_eval_summary_avg_answer_relevance_uses_stored_value():
+    client.post("/query", json={"query": "What is a neural network?", "top_k": 3})
+    r = client.get("/eval/summary")
+    assert r.status_code == 200
+    data = r.json()
+    assert "avg_answer_relevance" in data
+    assert data["avg_answer_relevance"] is not None
+    assert 0.0 <= data["avg_answer_relevance"] <= 1.0
+
+
+def test_eval_query_persists_answer_relevance_in_history():
+    r_q = client.post("/query", json={"query": "overfitting", "top_k": 1})
+    chunk_id = r_q.json()["chunks"][0]["chunk_id"]
+    client.post("/query/eval", json={
+        "query": "What is overfitting?",
+        "relevant_doc_ids": [chunk_id],
+        "top_k": 3,
+    })
+    r = client.get("/eval/history?limit=3")
+    assert r.status_code == 200
+    rows = r.json()
+    most_recent = rows[0]
+    assert "answer_relevance" in most_recent
+    assert most_recent["answer_relevance"] is not None
+
+
 def test_query_chunks_expose_dense_and_bm25_scores():
     r = client.post("/query", json={
         "query": "What is gradient descent?",

@@ -22,6 +22,7 @@ Base.metadata.create_all(bind=engine)
 
 with engine.connect() as _conn:
     _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS ndcg FLOAT"))
+    _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS answer_relevance FLOAT"))
     _conn.commit()
 
 
@@ -60,11 +61,13 @@ def query(req: QueryReq, db: Session = Depends(get_db)):
 
     answer = generator.answer(req.query, chunks)
 
+    ar = answer_relevance(req.query, answer)
     log = QueryLog(
         query=req.query,
         answer=answer,
         retrieved_ids=[c["chunk_id"] for c in chunks],
         faithfulness=faithfulness(answer, chunks),
+        answer_relevance=ar,
     )
     db.add(log)
     db.commit()
@@ -77,7 +80,7 @@ def query(req: QueryReq, db: Session = Depends(get_db)):
         "citations": extract_citations(answer, chunks),
         "eval": {
             "faithfulness":     log.faithfulness,
-            "answer_relevance": answer_relevance(req.query, answer),
+            "answer_relevance": log.answer_relevance,
         },
     }
 
@@ -125,6 +128,7 @@ def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
         mrr=mrr,
         ndcg=ndcg,
         faithfulness=f,
+        answer_relevance=ar,
     )
     db.add(log)
     db.commit()
@@ -160,7 +164,7 @@ def eval_summary(db: Session = Depends(get_db)):
         "avg_hit_rate":         avg([l.hit_rate for l in logs]),
         "avg_mrr":              avg([l.mrr for l in logs]),
         "avg_ndcg":             avg([l.ndcg for l in logs]),
-        "avg_answer_relevance": avg([answer_relevance(l.query, l.answer) for l in logs]),
+        "avg_answer_relevance": avg([l.answer_relevance for l in logs]),
     }
 
 @app.get("/eval/history", tags=["monitoring"])
@@ -173,13 +177,14 @@ def eval_history(limit: int = 20, db: Session = Depends(get_db)):
     )
     return [
         {
-            "query":        l.query,
-            "answer":       l.answer[:200] + "..." if len(l.answer) > 200 else l.answer,
-            "faithfulness": l.faithfulness,
-            "hit_rate":     l.hit_rate,
-            "mrr":          l.mrr,
-            "ndcg":         l.ndcg,
-            "created_at":   str(l.created_at),
+            "query":            l.query,
+            "answer":           l.answer[:200] + "..." if len(l.answer) > 200 else l.answer,
+            "faithfulness":     l.faithfulness,
+            "hit_rate":         l.hit_rate,
+            "mrr":              l.mrr,
+            "ndcg":             l.ndcg,
+            "answer_relevance": l.answer_relevance,
+            "created_at":       str(l.created_at),
         }
         for l in logs
     ]
