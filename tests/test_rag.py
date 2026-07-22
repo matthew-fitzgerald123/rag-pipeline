@@ -837,3 +837,239 @@ def test_bm25_query_returns_dict_mapping_ids_to_floats():
     assert "doc_a" in result
     assert "doc_b" in result
     assert all(isinstance(v, float) for v in result.values())
+
+
+# ── VectorStore.query() unit tests ───────────────────────
+
+def _make_query_store(dense_scores, bm25_scores, fetched_docs):
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    store = object.__new__(VectorStore)
+    store._dense_query = MagicMock(return_value=dense_scores)
+    store._bm25_query = MagicMock(return_value=bm25_scores)
+    store.collection = MagicMock()
+    store.collection.get.return_value = fetched_docs
+    return store
+
+
+def test_query_hybrid_fusion_formula():
+    from app.vector_store import HYBRID_ALPHA
+    dense = {"c1": 0.8, "c2": 0.6}
+    bm25  = {"c1": 0.4, "c2": 1.0}
+    store = _make_query_store(
+        dense_scores=dense,
+        bm25_scores=bm25,
+        fetched_docs={"ids": ["c1", "c2"], "documents": ["doc one", "doc two"], "metadatas": [{}, {}]},
+    )
+    results = store.query("test query", top_k=2)
+    id_to_result = {r["chunk_id"]: r for r in results}
+    assert id_to_result["c1"]["score"] == round(HYBRID_ALPHA * 0.8 + (1 - HYBRID_ALPHA) * 0.4, 4)
+    assert id_to_result["c2"]["score"] == round(HYBRID_ALPHA * 0.6 + (1 - HYBRID_ALPHA) * 1.0, 4)
+
+
+def test_query_sorted_by_fused_score_descending():
+    dense = {"c1": 0.1, "c2": 0.9}
+    bm25  = {"c1": 0.1, "c2": 0.9}
+    store = _make_query_store(
+        dense_scores=dense,
+        bm25_scores=bm25,
+        fetched_docs={"ids": ["c1", "c2"], "documents": ["low", "high"], "metadatas": [{}, {}]},
+    )
+    results = store.query("query", top_k=2)
+    assert results[0]["chunk_id"] == "c2"
+    assert results[1]["chunk_id"] == "c1"
+
+
+def test_query_top_k_limits_results():
+    dense = {"c1": 0.9, "c2": 0.7, "c3": 0.5}
+    bm25  = {"c1": 0.9, "c2": 0.7, "c3": 0.5}
+    store = _make_query_store(
+        dense_scores=dense,
+        bm25_scores=bm25,
+        fetched_docs={"ids": ["c1", "c2"], "documents": ["text1", "text2"], "metadatas": [{}, {}]},
+    )
+    results = store.query("query", top_k=2)
+    assert len(results) <= 2
+
+
+def test_query_result_exposes_dense_and_bm25_scores():
+    dense = {"c1": 0.8}
+    bm25  = {"c1": 0.4}
+    store = _make_query_store(
+        dense_scores=dense,
+        bm25_scores=bm25,
+        fetched_docs={"ids": ["c1"], "documents": ["some text"], "metadatas": [{"title": "doc"}]},
+    )
+    results = store.query("query", top_k=5)
+    assert results[0]["dense_score"] == 0.8
+    assert results[0]["bm25_score"] == 0.4
+
+
+def test_query_bm25_only_chunk_uses_zero_dense_score():
+    from app.vector_store import HYBRID_ALPHA
+    dense = {}
+    bm25  = {"c1": 1.0}
+    store = _make_query_store(
+        dense_scores=dense,
+        bm25_scores=bm25,
+        fetched_docs={"ids": ["c1"], "documents": ["text"], "metadatas": [{}]},
+    )
+    results = store.query("query", top_k=5)
+    assert results[0]["dense_score"] == 0.0
+    assert results[0]["score"] == round((1 - HYBRID_ALPHA) * 1.0, 4)
+
+
+def test_query_dense_only_chunk_uses_zero_bm25_score():
+    from app.vector_store import HYBRID_ALPHA
+    dense = {"c1": 1.0}
+    bm25  = {}
+    store = _make_query_store(
+        dense_scores=dense,
+        bm25_scores=bm25,
+        fetched_docs={"ids": ["c1"], "documents": ["text"], "metadatas": [{}]},
+    )
+    results = store.query("query", top_k=5)
+    assert results[0]["bm25_score"] == 0.0
+    assert results[0]["score"] == round(HYBRID_ALPHA * 1.0, 4)
+
+
+def test_query_returns_empty_list_when_no_hits():
+    store = _make_query_store(
+        dense_scores={},
+        bm25_scores={},
+        fetched_docs={"ids": [], "documents": [], "metadatas": []},
+    )
+    assert store.query("query", top_k=5) == []
+
+
+def test_query_result_has_chunk_id_text_and_metadata():
+    dense = {"c1": 0.9}
+    bm25  = {"c1": 0.5}
+    store = _make_query_store(
+        dense_scores=dense,
+        bm25_scores=bm25,
+        fetched_docs={"ids": ["c1"], "documents": ["chunk text"], "metadatas": [{"title": "ML Basics"}]},
+    )
+    results = store.query("query", top_k=5)
+    assert results[0]["chunk_id"] == "c1"
+    assert results[0]["text"] == "chunk text"
+    assert results[0]["metadata"] == {"title": "ML Basics"}
+
+
+def test_query_score_rounded_to_four_decimal_places():
+    from app.vector_store import HYBRID_ALPHA
+    dense = {"c1": 1.0 / 3.0}
+    bm25  = {"c1": 2.0 / 3.0}
+    store = _make_query_store(
+        dense_scores=dense,
+        bm25_scores=bm25,
+        fetched_docs={"ids": ["c1"], "documents": ["text"], "metadatas": [{}]},
+    )
+    results = store.query("query", top_k=5)
+    score = results[0]["score"]
+    assert score == round(score, 4)
+
+
+# ── VectorStore._rebuild_bm25() unit tests ────────────────
+
+def _make_rebuild_store():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    store = object.__new__(VectorStore)
+    store.collection = MagicMock()
+    return store
+
+
+def test_rebuild_bm25_sets_none_when_collection_empty():
+    store = _make_rebuild_store()
+    store.collection.count.return_value = 0
+    store._rebuild_bm25()
+    assert store._bm25 is None
+    assert store._bm25_ids == []
+
+
+def test_rebuild_bm25_does_not_call_get_when_empty():
+    store = _make_rebuild_store()
+    store.collection.count.return_value = 0
+    store._rebuild_bm25()
+    store.collection.get.assert_not_called()
+
+
+def test_rebuild_bm25_populates_ids_when_documents_exist():
+    from rank_bm25 import BM25Okapi
+    store = _make_rebuild_store()
+    store.collection.count.return_value = 2
+    store.collection.get.return_value = {
+        "ids": ["c1", "c2"],
+        "documents": ["supervised learning trains models", "neural networks are universal"],
+    }
+    store._rebuild_bm25()
+    assert store._bm25_ids == ["c1", "c2"]
+    assert isinstance(store._bm25, BM25Okapi)
+
+
+def test_rebuild_bm25_bm25_is_none_after_reset_to_empty():
+    store = _make_rebuild_store()
+    store.collection.count.return_value = 0
+    store._rebuild_bm25()
+    store.collection.count.return_value = 0
+    store._rebuild_bm25()
+    assert store._bm25 is None
+
+
+# ── Generator.answer() unit tests ─────────────────────────
+
+def test_generator_answer_raises_when_model_not_loaded():
+    from app.generator import Generator
+    gen = Generator()
+    gen.model = None
+    with pytest.raises(RuntimeError, match="Generator not loaded"):
+        gen.answer("query", [{"text": "ctx"}])
+
+
+def test_generator_answer_strips_whitespace():
+    from app.generator import Generator
+    from unittest.mock import MagicMock, patch
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    with patch("app.generator.generate", return_value="  answer with whitespace  "):
+        result = gen.answer("query", [{"text": "ctx"}])
+    assert result == "answer with whitespace"
+
+
+def test_generator_answer_returns_string():
+    from app.generator import Generator
+    from unittest.mock import MagicMock, patch
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    with patch("app.generator.generate", return_value="some answer"):
+        result = gen.answer("query", [{"text": "ctx"}])
+    assert isinstance(result, str)
+
+
+def test_generator_answer_calls_generate_with_built_prompt():
+    from app.generator import Generator, _build_prompt
+    from unittest.mock import MagicMock, patch, call
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    chunks = [{"text": "context content"}]
+    expected_prompt = _build_prompt("What is ML?", chunks)
+    with patch("app.generator.generate", return_value="answer") as mock_gen:
+        gen.answer("What is ML?", chunks)
+    actual_prompt = mock_gen.call_args[1].get("prompt") or mock_gen.call_args[0][2]
+    assert actual_prompt == expected_prompt
+
+
+def test_generator_answer_respects_max_tokens_default():
+    from app.generator import Generator
+    from unittest.mock import MagicMock, patch
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    with patch("app.generator.generate", return_value="ans") as mock_gen:
+        gen.answer("query", [{"text": "ctx"}])
+    kwargs = mock_gen.call_args[1]
+    assert kwargs.get("max_tokens") == 512
