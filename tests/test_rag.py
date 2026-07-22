@@ -243,3 +243,40 @@ def test_citation_extraction_unit():
     result = extract_citations(answer, chunks, threshold=0.2)
     assert len(result) >= 1
     assert result[0]["citations"][0]["chunk_id"] == "c1"
+
+
+# ── /query/stream DB logging tests ───────────────────────
+
+def test_query_stream_logs_query_to_db():
+    count_before = client.get("/eval/summary").json()["total_queries"]
+
+    r = client.post("/query/stream", json={
+        "query": "What is gradient descent?",
+        "top_k": 3,
+    })
+    assert r.status_code == 200
+
+    assert client.get("/eval/summary").json()["total_queries"] == count_before + 1
+    assert client.get("/eval/history?limit=1").json()[0]["query"] == "What is gradient descent?"
+
+
+def test_query_stream_log_includes_faithfulness():
+    r = client.post("/query/stream", json={
+        "query": "What is regularization?",
+        "top_k": 3,
+    })
+    assert r.status_code == 200
+
+    latest = client.get("/eval/history?limit=1").json()[0]
+    assert latest["faithfulness"] is not None
+    assert 0.0 <= latest["faithfulness"] <= 1.0
+
+
+def test_query_stream_total_queries_increments():
+    summary_before = client.get("/eval/summary").json()
+    count_before = summary_before["total_queries"]
+
+    client.post("/query/stream", json={"query": "What is backpropagation?", "top_k": 3})
+
+    summary_after = client.get("/eval/summary").json()
+    assert summary_after["total_queries"] == count_before + 1

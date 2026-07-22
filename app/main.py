@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Any, AsyncIterator
+import json
 import os
 from dotenv import load_dotenv
 
@@ -83,7 +84,7 @@ def query(req: QueryReq, db: Session = Depends(get_db)):
 
 @app.post("/query/stream", tags=["rag"])
 async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
-    """Stream answer tokens as SSE events. Does not log to DB."""
+    """Stream answer tokens as SSE events. Logs accumulated answer to DB after stream ends."""
     if vector_store.count() == 0:
         raise HTTPException(400, "No documents indexed -- run: make ingest")
 
@@ -94,8 +95,25 @@ async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
     chunks = rerank(req.query, candidates, req.top_k) if req.rerank else candidates[:req.top_k]
 
     async def event_generator() -> AsyncIterator[str]:
+        tokens: list[str] = []
         async for payload in generator.answer_stream(req.query, chunks):
             yield f"data: {payload}\n\n"
+            if payload != "[DONE]":
+                try:
+                    tokens.append(json.loads(payload).get("token", ""))
+                except Exception:
+                    pass
+
+        answer = "".join(tokens)
+        if answer:
+            log = QueryLog(
+                query=req.query,
+                answer=answer,
+                retrieved_ids=[c["chunk_id"] for c in chunks],
+                faithfulness=faithfulness(answer, chunks),
+            )
+            db.add(log)
+            db.commit()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
