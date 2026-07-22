@@ -121,6 +121,33 @@ def test_eval_history_includes_ndcg_field():
     for row in rows:
         assert "ndcg" in row
 
+def test_eval_history_includes_answer_relevance_field():
+    r = client.get("/eval/history?limit=5")
+    assert r.status_code == 200
+    rows = r.json()
+    assert len(rows) > 0
+    for row in rows:
+        assert "answer_relevance" in row
+
+def test_query_persists_answer_relevance():
+    r = client.post("/query", json={"query": "What is supervised learning?", "top_k": 3})
+    assert r.status_code == 200
+    data = r.json()
+    assert "answer_relevance" in data["eval"]
+    assert 0.0 <= data["eval"]["answer_relevance"] <= 1.0
+    # Confirm it's also stored: fetch history and check the most-recent row.
+    history = client.get("/eval/history?limit=1").json()
+    assert history[0]["answer_relevance"] is not None
+    assert 0.0 <= history[0]["answer_relevance"] <= 1.0
+
+def test_eval_summary_answer_relevance_uses_stored_values():
+    # Drive a query so at least one row has answer_relevance populated.
+    client.post("/query", json={"query": "What is overfitting?", "top_k": 3})
+    r = client.get("/eval/summary")
+    assert r.status_code == 200
+    data = r.json()
+    assert "avg_answer_relevance" in data
+
 def test_empty_query_still_returns():
     r = client.post("/query", json={"query": "xyzzy nonsense query 12345", "top_k": 3})
     assert r.status_code in [200, 404]
