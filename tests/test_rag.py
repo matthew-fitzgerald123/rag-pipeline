@@ -376,3 +376,92 @@ def test_answer_relevance_stopwords_only_query():
     from app.evaluator import answer_relevance
     # Query collapses to empty set after stopword removal.
     assert answer_relevance("the is a", "some answer text") == 0.0
+
+
+# ── chunk_document unit tests ─────────────────────────────
+
+def test_chunk_document_short_text_produces_one_chunk():
+    from app.chunker import chunk_document
+    chunks = chunk_document("doc1", "Short text here.", {}, chunk_size=512, overlap=64)
+    assert len(chunks) == 1
+    assert chunks[0].text == "Short text here."
+
+
+def test_chunk_document_long_text_produces_multiple_chunks():
+    from app.chunker import chunk_document
+    text = "x" * 1000
+    chunks = chunk_document("doc1", text, {}, chunk_size=512, overlap=64)
+    assert len(chunks) >= 2
+
+
+def test_chunk_document_chunk_id_starts_at_zero():
+    from app.chunker import chunk_document
+    chunks = chunk_document("my_doc", "Some text.", {}, chunk_size=512, overlap=64)
+    assert chunks[0].chunk_id == "my_doc_chunk_0"
+
+
+def test_chunk_document_chunk_ids_are_sequential():
+    from app.chunker import chunk_document
+    text = "a" * 1000
+    chunks = chunk_document("my_doc", text, {}, chunk_size=512, overlap=64)
+    for i, chunk in enumerate(chunks):
+        assert chunk.chunk_id == f"my_doc_chunk_{i}"
+
+
+def test_chunk_document_doc_id_on_every_chunk():
+    from app.chunker import chunk_document
+    text = "a" * 1000
+    chunks = chunk_document("test_doc", text, {}, chunk_size=512, overlap=64)
+    for chunk in chunks:
+        assert chunk.doc_id == "test_doc"
+
+
+def test_chunk_document_metadata_includes_chunk_index():
+    from app.chunker import chunk_document
+    text = "a" * 1000
+    chunks = chunk_document("doc1", text, {}, chunk_size=512, overlap=64)
+    for i, chunk in enumerate(chunks):
+        assert chunk.metadata["chunk_index"] == i
+
+
+def test_chunk_document_metadata_includes_doc_id_field():
+    from app.chunker import chunk_document
+    chunks = chunk_document("doc1", "Some text.", {}, chunk_size=512, overlap=64)
+    assert chunks[0].metadata["doc_id"] == "doc1"
+
+
+def test_chunk_document_original_metadata_preserved():
+    from app.chunker import chunk_document
+    meta = {"source": "wiki", "author": "alice"}
+    chunks = chunk_document("doc1", "Some text.", meta, chunk_size=512, overlap=64)
+    assert chunks[0].metadata["source"] == "wiki"
+    assert chunks[0].metadata["author"] == "alice"
+
+
+def test_chunk_document_overlap_creates_shared_content():
+    from app.chunker import chunk_document
+    # chunk_size=10, overlap=4 → stride=6
+    # chunk 0: text[0:10], chunk 1: text[6:16]
+    # chars 6-9 ("ghij") appear at the tail of chunk 0 and head of chunk 1.
+    text = "abcdefghijklmno"  # 15 chars
+    chunks = chunk_document("doc", text, {}, chunk_size=10, overlap=4)
+    assert len(chunks) >= 2
+    assert "ghij" in chunks[0].text
+    assert chunks[1].text.startswith("ghij")
+
+
+def test_chunk_document_empty_text_returns_no_chunks():
+    from app.chunker import chunk_document
+    assert chunk_document("doc", "", {}) == []
+
+
+def test_chunk_document_whitespace_only_returns_no_chunks():
+    from app.chunker import chunk_document
+    assert chunk_document("doc", "   \n\t  ", {}) == []
+
+
+def test_chunk_document_last_chunk_covers_end_of_text():
+    from app.chunker import chunk_document
+    text = "abcdefghijklmno"  # 15 chars
+    chunks = chunk_document("doc", text, {}, chunk_size=10, overlap=4)
+    assert chunks[-1].text.endswith(text[-1])
