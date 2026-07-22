@@ -465,3 +465,106 @@ def test_chunk_document_last_chunk_covers_end_of_text():
     text = "abcdefghijklmno"  # 15 chars
     chunks = chunk_document("doc", text, {}, chunk_size=10, overlap=4)
     assert chunks[-1].text.endswith(text[-1])
+
+
+# ── extract_citations unit tests ──────────────────────────
+
+def test_extract_citations_empty_answer_returns_empty():
+    from app.citations import extract_citations
+    result = extract_citations("", [{"chunk_id": "c1", "text": "some text", "metadata": {}}])
+    assert result == []
+
+
+def test_extract_citations_no_chunks_returns_empty_citations_per_sentence():
+    from app.citations import extract_citations
+    result = extract_citations("Supervised learning uses labeled data.", [])
+    assert len(result) == 1
+    assert result[0]["sentence"] == "Supervised learning uses labeled data."
+    assert result[0]["citations"] == []
+
+
+def test_extract_citations_above_threshold_is_cited():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "Supervised learning trains on labeled data.", "metadata": {"title": "ML"}}]
+    result = extract_citations("Supervised learning trains on labeled data.", chunks, threshold=0.3)
+    assert len(result) == 1
+    assert len(result[0]["citations"]) == 1
+    assert result[0]["citations"][0]["chunk_id"] == "c1"
+
+
+def test_extract_citations_below_threshold_not_cited():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "quantum mechanics wave function", "metadata": {}}]
+    result = extract_citations("Supervised learning trains on labeled data.", chunks, threshold=0.3)
+    assert result[0]["citations"] == []
+
+
+def test_extract_citations_multiple_sentences_each_mapped():
+    from app.citations import extract_citations
+    chunks = [
+        {"chunk_id": "c1", "text": "Supervised learning trains on labeled data.", "metadata": {}},
+        {"chunk_id": "c2", "text": "Overfitting occurs when model memorizes training data.", "metadata": {}},
+    ]
+    answer = "Supervised learning trains on labeled data. Overfitting occurs when model memorizes training data."
+    result = extract_citations(answer, chunks, threshold=0.3)
+    assert len(result) == 2
+    assert result[0]["citations"][0]["chunk_id"] == "c1"
+    assert result[1]["citations"][0]["chunk_id"] == "c2"
+
+
+def test_extract_citations_sorted_by_overlap_descending():
+    from app.citations import extract_citations
+    # c2 has more token overlap with the query sentence than c1
+    chunks = [
+        {"chunk_id": "c1", "text": "supervised learning labeled", "metadata": {}},
+        {"chunk_id": "c2", "text": "supervised learning trains labeled data model", "metadata": {}},
+    ]
+    result = extract_citations("Supervised learning trains on labeled data.", chunks, threshold=0.2)
+    assert len(result[0]["citations"]) == 2
+    first_overlap = result[0]["citations"][0]["overlap"]
+    second_overlap = result[0]["citations"][1]["overlap"]
+    assert first_overlap >= second_overlap
+
+
+def test_extract_citations_title_falls_back_to_empty_when_missing():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "Supervised learning trains on labeled data.", "metadata": {}}]
+    result = extract_citations("Supervised learning trains on labeled data.", chunks, threshold=0.3)
+    assert result[0]["citations"][0]["title"] == ""
+
+
+def test_extract_citations_title_uses_metadata_field():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "Supervised learning trains on labeled data.", "metadata": {"title": "ML Basics"}}]
+    result = extract_citations("Supervised learning trains on labeled data.", chunks, threshold=0.3)
+    assert result[0]["citations"][0]["title"] == "ML Basics"
+
+
+def test_extract_citations_overlap_is_rounded_to_three_decimal_places():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "Supervised learning trains on labeled data.", "metadata": {}}]
+    result = extract_citations("Supervised learning trains on labeled data.", chunks, threshold=0.3)
+    overlap = result[0]["citations"][0]["overlap"]
+    assert overlap == round(overlap, 3)
+
+
+def test_extract_citations_stopword_only_sentence_is_skipped():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "some real content here", "metadata": {}}]
+    # After stopword removal "The is a." collapses to empty — sentence is skipped
+    result = extract_citations("The is a.", chunks, threshold=0.1)
+    assert result == []
+
+
+def test_extract_citations_sentence_structure_has_required_keys():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "Neural networks learn representations.", "metadata": {}}]
+    result = extract_citations("Neural networks learn representations.", chunks, threshold=0.1)
+    assert len(result) >= 1
+    entry = result[0]
+    assert "sentence" in entry
+    assert "citations" in entry
+    for citation in entry["citations"]:
+        assert "chunk_id" in citation
+        assert "title" in citation
+        assert "overlap" in citation
