@@ -147,3 +147,154 @@ def test_citation_extraction_unit():
     result = extract_citations(answer, chunks, threshold=0.2)
     assert len(result) >= 1
     assert result[0]["citations"][0]["chunk_id"] == "c1"
+
+
+# ── Generator.answer_stream() unit tests ──────────────────
+
+import asyncio
+import json as _json
+
+
+async def _collect_stream(async_gen):
+    items = []
+    async for item in async_gen:
+        items.append(item)
+    return items
+
+
+def test_answer_stream_raises_when_model_not_loaded():
+    from app.generator import Generator
+    gen = Generator()
+    gen.model = None
+
+    async def _run():
+        async for _ in gen.answer_stream("query", [{"text": "ctx"}]):
+            pass
+
+    with pytest.raises(RuntimeError, match="Generator not loaded"):
+        asyncio.run(_run())
+
+
+def test_answer_stream_ends_with_done_sentinel():
+    from app.generator import Generator
+    from unittest.mock import MagicMock
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+
+    def fake_stream(prompt, max_tokens, q, done):
+        q.put("hello")
+        done.set()
+
+    gen._stream_into_queue = fake_stream
+    items = asyncio.run(_collect_stream(gen.answer_stream("q", [{"text": "ctx"}])))
+    assert items[-1] == "[DONE]"
+
+
+def test_answer_stream_tokens_are_json_encoded():
+    from app.generator import Generator
+    from unittest.mock import MagicMock
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+
+    def fake_stream(prompt, max_tokens, q, done):
+        q.put("tok1")
+        q.put("tok2")
+        done.set()
+
+    gen._stream_into_queue = fake_stream
+    items = asyncio.run(_collect_stream(gen.answer_stream("q", [{"text": "ctx"}])))
+    token_items = [i for i in items if i != "[DONE]"]
+    assert len(token_items) == 2
+    for item in token_items:
+        parsed = _json.loads(item)
+        assert "token" in parsed
+
+
+def test_answer_stream_yields_all_tokens_in_order():
+    from app.generator import Generator
+    from unittest.mock import MagicMock
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+
+    def fake_stream(prompt, max_tokens, q, done):
+        for tok in ["alpha", " ", "beta"]:
+            q.put(tok)
+        done.set()
+
+    gen._stream_into_queue = fake_stream
+    items = asyncio.run(_collect_stream(gen.answer_stream("q", [{"text": "ctx"}])))
+    tokens = [_json.loads(i)["token"] for i in items if i != "[DONE]"]
+    assert tokens == ["alpha", " ", "beta"]
+
+
+def test_answer_stream_empty_queue_yields_only_done():
+    from app.generator import Generator
+    from unittest.mock import MagicMock
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+
+    def fake_stream(prompt, max_tokens, q, done):
+        done.set()
+
+    gen._stream_into_queue = fake_stream
+    items = asyncio.run(_collect_stream(gen.answer_stream("q", [])))
+    assert items == ["[DONE]"]
+
+
+def test_answer_stream_respects_max_tokens():
+    from app.generator import Generator
+    from unittest.mock import MagicMock
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+
+    captured = {}
+
+    def fake_stream(prompt, max_tokens, q, done):
+        captured["max_tokens"] = max_tokens
+        done.set()
+
+    gen._stream_into_queue = fake_stream
+    asyncio.run(_collect_stream(gen.answer_stream("q", [{"text": "ctx"}], max_tokens=256)))
+    assert captured["max_tokens"] == 256
+
+
+def test_answer_stream_default_max_tokens_is_512():
+    from app.generator import Generator
+    from unittest.mock import MagicMock
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+
+    captured = {}
+
+    def fake_stream(prompt, max_tokens, q, done):
+        captured["max_tokens"] = max_tokens
+        done.set()
+
+    gen._stream_into_queue = fake_stream
+    asyncio.run(_collect_stream(gen.answer_stream("q", [{"text": "ctx"}])))
+    assert captured["max_tokens"] == 512
+
+
+def test_answer_stream_passes_built_prompt():
+    from app.generator import Generator, _build_prompt
+    from unittest.mock import MagicMock
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+
+    captured = {}
+    chunks = [{"text": "context content"}]
+
+    def fake_stream(prompt, max_tokens, q, done):
+        captured["prompt"] = prompt
+        done.set()
+
+    gen._stream_into_queue = fake_stream
+    asyncio.run(_collect_stream(gen.answer_stream("What is ML?", chunks)))
+    assert captured["prompt"] == _build_prompt("What is ML?", chunks)
