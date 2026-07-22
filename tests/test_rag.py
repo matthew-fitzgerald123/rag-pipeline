@@ -370,3 +370,179 @@ def test_rerank_top_k_larger_than_candidates_returns_all():
         result = rerank("query", candidates, top_k=10)
 
     assert len(result) == 1
+
+
+# ── VectorStore hybrid search unit tests ──────────────────
+
+def _make_mock_store():
+    from unittest.mock import patch, MagicMock
+    from app.vector_store import VectorStore
+
+    mock_collection = MagicMock()
+    mock_collection.count.return_value = 0  # empty corpus → skip BM25 rebuild
+
+    with patch("app.vector_store.chromadb.PersistentClient") as mock_client, \
+         patch("app.vector_store.SentenceTransformer"):
+        mock_client.return_value.get_or_create_collection.return_value = mock_collection
+        store = VectorStore()
+
+    return store, mock_collection
+
+
+def test_vs_tokenize_lowercases_input():
+    from app.vector_store import _tokenize
+    assert _tokenize("Hello WORLD") == ["hello", "world"]
+
+
+def test_vs_tokenize_strips_punctuation():
+    from app.vector_store import _tokenize
+    assert _tokenize("cats, dogs!") == ["cats", "dogs"]
+
+
+def test_vs_tokenize_empty_string_returns_empty():
+    from app.vector_store import _tokenize
+    assert _tokenize("") == []
+
+
+def test_vs_tokenize_preserves_alphanumeric_tokens():
+    from app.vector_store import _tokenize
+    tokens = _tokenize("model v2 checkpoint")
+    assert "v2" in tokens and "model" in tokens
+
+
+def test_vs_bm25_query_returns_empty_when_index_not_built():
+    store, _ = _make_mock_store()
+    # _bm25 is None because count() returned 0 during construction
+    result = store._bm25_query("any query", top_k=5)
+    assert result == {}
+
+
+def test_vs_bm25_query_normalizes_scores_to_unit_range():
+    from rank_bm25 import BM25Okapi
+    store, _ = _make_mock_store()
+
+    corpus = [
+        ["supervised", "learning", "trains", "labeled"],
+        ["deep", "learning", "neural", "networks"],
+    ]
+    store._bm25 = BM25Okapi(corpus)
+    store._bm25_ids = ["chunk_1", "chunk_2"]
+
+    result = store._bm25_query("supervised learning", top_k=5)
+    for score in result.values():
+        assert 0.0 <= score <= 1.0
+
+
+def test_vs_bm25_query_excludes_zero_score_chunks():
+    from unittest.mock import MagicMock
+    import numpy as np
+    store, _ = _make_mock_store()
+
+    mock_bm25 = MagicMock()
+    mock_bm25.get_scores.return_value = np.array([0.8, 0.0, 0.4])
+    store._bm25 = mock_bm25
+    store._bm25_ids = ["has_score", "zero_score", "has_score_2"]
+
+    result = store._bm25_query("any query", top_k=5)
+    assert "has_score" in result
+    assert "zero_score" not in result
+    assert "has_score_2" in result
+
+
+def test_vs_hybrid_fusion_ranks_by_combined_score():
+    """Chunk ranked higher by fused score should appear first."""
+    from app.vector_store import HYBRID_ALPHA
+    from unittest.mock import MagicMock
+    store, mock_collection = _make_mock_store()
+
+    # a dominates dense; b dominates BM25
+    store._dense_query = MagicMock(return_value={"chunk_a": 0.9, "chunk_b": 0.4})
+    store._bm25_query  = MagicMock(return_value={"chunk_a": 0.2, "chunk_b": 0.8})
+    # a: 0.7*0.9 + 0.3*0.2 = 0.69 ; b: 0.7*0.4 + 0.3*0.8 = 0.52 → a wins
+    mock_collection.get.return_value = {
+        "ids":       ["chunk_a", "chunk_b"],
+        "documents": ["doc a",   "doc b"],
+        "metadatas": [{},        {}],
+    }
+
+    results = store.query("test query", top_k=2)
+
+    assert len(results) == 2
+    assert results[0]["chunk_id"] == "chunk_a"
+    assert results[1]["chunk_id"] == "chunk_b"
+    expected_score = round(HYBRID_ALPHA * 0.9 + (1 - HYBRID_ALPHA) * 0.2, 4)
+    assert results[0]["score"] == expected_score
+
+
+def test_vs_hybrid_fusion_exposes_component_scores():
+    from unittest.mock import MagicMock
+    store, mock_collection = _make_mock_store()
+
+    store._dense_query = MagicMock(return_value={"a": 0.8, "b": 0.6})
+    store._bm25_query  = MagicMock(return_value={"a": 0.4, "b": 0.7})
+    mock_collection.get.return_value = {
+        "ids":       ["a", "b"],
+        "documents": ["text a", "text b"],
+        "metadatas": [{"title": "A"}, {"title": "B"}],
+    }
+
+    results = store.query("test", top_k=2)
+
+    for r in results:
+        assert "dense_score" in r
+        assert "bm25_score"  in r
+        assert "score"       in r
+
+    result_a = next(r for r in results if r["chunk_id"] == "a")
+    assert result_a["dense_score"] == 0.8
+    assert result_a["bm25_score"]  == 0.4
+
+
+def test_vs_hybrid_query_respects_top_k():
+    from unittest.mock import MagicMock
+    store, mock_collection = _make_mock_store()
+
+    store._dense_query = MagicMock(return_value={"a": 0.9, "b": 0.7, "c": 0.5})
+    store._bm25_query  = MagicMock(return_value={"a": 0.6, "b": 0.4, "c": 0.2})
+    # top-2 after fusion: a (0.81) and b (0.61)
+    mock_collection.get.return_value = {
+        "ids":       ["a", "b"],
+        "documents": ["doc a", "doc b"],
+        "metadatas": [{},      {}],
+    }
+
+    results = store.query("query", top_k=2)
+    assert len(results) == 2
+    assert results[0]["chunk_id"] == "a"
+    assert results[1]["chunk_id"] == "b"
+
+
+def test_vs_hybrid_query_returns_empty_when_no_scores():
+    from unittest.mock import MagicMock
+    store, _ = _make_mock_store()
+
+    store._dense_query = MagicMock(return_value={})
+    store._bm25_query  = MagicMock(return_value={})
+
+    results = store.query("query", top_k=5)
+    assert results == []
+
+
+def test_vs_hybrid_query_dense_only_when_bm25_empty():
+    """Dense-only path: BM25 returns nothing, dense scores drive the ranking."""
+    from app.vector_store import HYBRID_ALPHA
+    from unittest.mock import MagicMock
+    store, mock_collection = _make_mock_store()
+
+    store._dense_query = MagicMock(return_value={"x": 0.7, "y": 0.3})
+    store._bm25_query  = MagicMock(return_value={})
+    mock_collection.get.return_value = {
+        "ids":       ["x", "y"],
+        "documents": ["doc x", "doc y"],
+        "metadatas": [{},      {}],
+    }
+
+    results = store.query("query", top_k=2)
+    assert results[0]["chunk_id"] == "x"
+    assert results[0]["score"] == round(HYBRID_ALPHA * 0.7, 4)
+    assert results[0]["bm25_score"] == 0.0
