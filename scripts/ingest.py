@@ -16,8 +16,6 @@ from app.models import Base, Document
 from app.chunker import chunk_document
 from app.vector_store import vector_store
 
-Base.metadata.create_all(bind=engine)
-
 DATA_DIR = Path("./data")
 
 def ingest_file(path: Path, db):
@@ -48,6 +46,7 @@ def ingest_file(path: Path, db):
     print(f"  Ingested: {title} ({len(chunks)} chunks)")
 
 if __name__ == "__main__":
+    Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     txt_files = list(DATA_DIR.glob("*.txt"))
     if not txt_files:
