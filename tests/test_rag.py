@@ -666,3 +666,168 @@ def test_extract_citations_sorted_by_overlap_descending():
     cites = result[0]["citations"]
     if len(cites) >= 2:
         assert cites[0]["overlap"] >= cites[1]["overlap"]
+
+
+# ── rerank() unit tests ───────────────────────────────────
+
+def _make_candidates(*texts):
+    return [
+        {"chunk_id": f"c{i}", "text": t, "metadata": {}, "score": 0.5}
+        for i, t in enumerate(texts)
+    ]
+
+
+def test_rerank_empty_candidates_returns_empty():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    with patch("app.reranker._get_model", return_value=MagicMock(predict=lambda p: [])):
+        assert rerank("q", [], top_k=3) == []
+
+
+def test_rerank_annotates_rerank_score():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    candidates = _make_candidates("text A", "text B")
+    mock_model = MagicMock()
+    mock_model.predict.return_value = [0.9, 0.3]
+    with patch("app.reranker._get_model", return_value=mock_model):
+        result = rerank("query", candidates, top_k=2)
+    assert all("rerank_score" in c for c in result)
+
+
+def test_rerank_sorts_by_score_descending():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    candidates = _make_candidates("low", "mid", "high")
+    mock_model = MagicMock()
+    mock_model.predict.return_value = [0.1, 0.5, 0.9]
+    with patch("app.reranker._get_model", return_value=mock_model):
+        result = rerank("query", candidates, top_k=3)
+    scores = [c["rerank_score"] for c in result]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_rerank_returns_top_k():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    candidates = _make_candidates("a", "b", "c", "d", "e")
+    mock_model = MagicMock()
+    mock_model.predict.return_value = [0.5, 0.4, 0.3, 0.2, 0.1]
+    with patch("app.reranker._get_model", return_value=mock_model):
+        result = rerank("query", candidates, top_k=2)
+    assert len(result) == 2
+
+
+def test_rerank_top_k_greater_than_candidates_returns_all():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    candidates = _make_candidates("only one")
+    mock_model = MagicMock()
+    mock_model.predict.return_value = [0.7]
+    with patch("app.reranker._get_model", return_value=mock_model):
+        result = rerank("query", candidates, top_k=10)
+    assert len(result) == 1
+
+
+def test_rerank_preserves_original_fields():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    candidates = [{"chunk_id": "x1", "text": "some text", "metadata": {"title": "Doc"}, "score": 0.8}]
+    mock_model = MagicMock()
+    mock_model.predict.return_value = [0.6]
+    with patch("app.reranker._get_model", return_value=mock_model):
+        result = rerank("query", candidates, top_k=1)
+    assert result[0]["chunk_id"] == "x1"
+    assert result[0]["text"] == "some text"
+    assert result[0]["metadata"]["title"] == "Doc"
+    assert result[0]["score"] == 0.8
+
+
+def test_rerank_highest_score_is_first():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    candidates = _make_candidates("worst", "best", "middle")
+    mock_model = MagicMock()
+    mock_model.predict.return_value = [0.1, 0.99, 0.5]
+    with patch("app.reranker._get_model", return_value=mock_model):
+        result = rerank("query", candidates, top_k=3)
+    assert result[0]["chunk_id"] == "c1"
+
+
+def test_rerank_score_is_rounded():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    candidates = _make_candidates("text")
+    mock_model = MagicMock()
+    mock_model.predict.return_value = [0.123456789]
+    with patch("app.reranker._get_model", return_value=mock_model):
+        result = rerank("query", candidates, top_k=1)
+    assert result[0]["rerank_score"] == round(0.123456789, 4)
+
+
+def test_rerank_passes_query_chunk_pairs_to_model():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    candidates = _make_candidates("chunk one", "chunk two")
+    mock_model = MagicMock()
+    mock_model.predict.return_value = [0.5, 0.3]
+    with patch("app.reranker._get_model", return_value=mock_model):
+        rerank("my query", candidates, top_k=2)
+    called_pairs = mock_model.predict.call_args[0][0]
+    assert called_pairs == [("my query", "chunk one"), ("my query", "chunk two")]
+
+
+# ── _build_prompt() unit tests ────────────────────────────
+
+def test_build_prompt_single_chunk_numbered():
+    from app.generator import _build_prompt
+    chunks = [{"text": "The sky is blue."}]
+    prompt = _build_prompt("What color is the sky?", chunks)
+    assert "[1] The sky is blue." in prompt
+
+
+def test_build_prompt_multiple_chunks_numbered_sequentially():
+    from app.generator import _build_prompt
+    chunks = [{"text": "First."}, {"text": "Second."}, {"text": "Third."}]
+    prompt = _build_prompt("question", chunks)
+    assert "[1] First." in prompt
+    assert "[2] Second." in prompt
+    assert "[3] Third." in prompt
+
+
+def test_build_prompt_query_appears_in_prompt():
+    from app.generator import _build_prompt
+    prompt = _build_prompt("What is machine learning?", [{"text": "ctx"}])
+    assert "What is machine learning?" in prompt
+
+
+def test_build_prompt_includes_instruction_text():
+    from app.generator import _build_prompt
+    prompt = _build_prompt("q", [{"text": "ctx"}])
+    assert "Answer the question using only the context below" in prompt
+
+
+def test_build_prompt_includes_fallback_instruction():
+    from app.generator import _build_prompt
+    prompt = _build_prompt("q", [{"text": "ctx"}])
+    assert "I don't have enough information" in prompt
+
+
+def test_build_prompt_empty_chunks_produces_no_numbered_context():
+    from app.generator import _build_prompt
+    prompt = _build_prompt("q", [])
+    assert "[1]" not in prompt
+
+
+def test_build_prompt_chunks_separated_by_blank_line():
+    from app.generator import _build_prompt
+    chunks = [{"text": "A"}, {"text": "B"}]
+    prompt = _build_prompt("q", chunks)
+    assert "[1] A\n\n[2] B" in prompt
+
+
+def test_build_prompt_inst_tags_wrap_content():
+    from app.generator import _build_prompt
+    prompt = _build_prompt("q", [{"text": "ctx"}])
+    assert prompt.startswith("[INST]")
+    assert prompt.endswith("[/INST]")
