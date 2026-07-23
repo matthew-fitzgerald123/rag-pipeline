@@ -18,11 +18,13 @@ from app.reranker import rerank, RERANKER_TOP_K
 from app.citations import extract_citations
 
 load_dotenv()
-Base.metadata.create_all(bind=engine)
-
-with engine.connect() as _conn:
-    _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS ndcg FLOAT"))
-    _conn.commit()
+try:
+    Base.metadata.create_all(bind=engine)
+    with engine.connect() as _conn:
+        _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS ndcg FLOAT"))
+        _conn.commit()
+except Exception:
+    pass
 
 
 @asynccontextmanager

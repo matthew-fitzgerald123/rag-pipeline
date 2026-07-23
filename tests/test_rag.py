@@ -1041,3 +1041,118 @@ def test_query_result_has_required_fields():
     assert len(result) == 1
     for field in ("chunk_id", "text", "metadata", "score", "dense_score", "bm25_score"):
         assert field in result[0]
+
+
+# ── /query/stream route unit tests ───────────────────────────
+
+_STREAM_FAKE_CHUNKS = [
+    {
+        "chunk_id": "c1",
+        "text": "Supervised learning uses labeled data.",
+        "metadata": {"title": "ML Basics"},
+        "score": 0.9,
+        "dense_score": 0.9,
+        "bm25_score": 0.5,
+    }
+]
+
+
+async def _fake_stream_tokens(query, chunks, max_tokens=512):
+    yield _json.dumps({"token": "hello"})
+    yield _json.dumps({"token": " world"})
+    yield "[DONE]"
+
+
+def test_stream_empty_index_returns_400():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 0
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    assert r.status_code == 400
+
+
+def test_stream_no_chunks_returns_404():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = []
+        r = client.post("/query/stream", json={"query": "nonsense query xyzzy", "top_k": 3})
+    assert r.status_code == 404
+
+
+def test_stream_content_type_is_event_stream():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    assert "text/event-stream" in r.headers["content-type"]
+
+
+def test_stream_events_use_sse_format():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    assert r.status_code == 200
+    assert "data: " in r.text
+    assert "\n\n" in r.text
+
+
+def test_stream_yields_done_sentinel():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    assert "data: [DONE]" in r.text
+
+
+def test_stream_token_events_are_json_with_token_key():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    token_lines = [
+        line for line in r.text.split("\n")
+        if line.startswith("data: ") and line.strip() != "data: [DONE]"
+    ]
+    assert len(token_lines) == 2
+    for line in token_lines:
+        parsed = _json.loads(line[len("data: "):])
+        assert "token" in parsed
+
+
+def test_stream_calls_reranker_when_rerank_true():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen, \
+         patch("app.main.rerank") as mock_rerank:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_rerank.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        client.post("/query/stream", json={"query": "What is ML?", "top_k": 3, "rerank": True})
+    mock_rerank.assert_called_once()
+
+
+def test_stream_skips_reranker_when_rerank_false():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen, \
+         patch("app.main.rerank") as mock_rerank:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        client.post("/query/stream", json={"query": "What is ML?", "top_k": 3, "rerank": False})
+    mock_rerank.assert_not_called()
