@@ -298,3 +298,180 @@ def test_answer_stream_passes_built_prompt():
     gen._stream_into_queue = fake_stream
     asyncio.run(_collect_stream(gen.answer_stream("What is ML?", chunks)))
     assert captured["prompt"] == _build_prompt("What is ML?", chunks)
+
+
+# ── hit_rate() unit tests ─────────────────────────────────
+
+def test_hit_rate_all_relevant_retrieved():
+    from app.evaluator import hit_rate
+    assert hit_rate(["a", "b", "c"], ["a", "b"]) == 1.0
+
+
+def test_hit_rate_none_relevant_retrieved():
+    from app.evaluator import hit_rate
+    assert hit_rate(["x", "y", "z"], ["a", "b"]) == 0.0
+
+
+def test_hit_rate_partial():
+    from app.evaluator import hit_rate
+    assert hit_rate(["a", "x", "y"], ["a", "b"]) == 0.5
+
+
+def test_hit_rate_empty_relevant_ids_is_zero():
+    from app.evaluator import hit_rate
+    assert hit_rate(["a", "b"], []) == 0.0
+
+
+def test_hit_rate_empty_retrieved_is_zero():
+    from app.evaluator import hit_rate
+    assert hit_rate([], ["a"]) == 0.0
+
+
+def test_hit_rate_single_relevant_found():
+    from app.evaluator import hit_rate
+    assert hit_rate(["a", "b", "c"], ["a"]) == 1.0
+
+
+def test_hit_rate_result_bounded():
+    from app.evaluator import hit_rate
+    score = hit_rate(["a", "b", "c", "d"], ["a", "b", "c"])
+    assert 0.0 <= score <= 1.0
+
+
+# ── mean_reciprocal_rank() unit tests ────────────────────
+
+def test_mrr_first_result_relevant():
+    from app.evaluator import mean_reciprocal_rank
+    assert mean_reciprocal_rank(["a", "b", "c"], ["a"]) == 1.0
+
+
+def test_mrr_second_result_relevant():
+    from app.evaluator import mean_reciprocal_rank
+    assert round(mean_reciprocal_rank(["x", "a", "c"], ["a"]), 4) == 0.5
+
+
+def test_mrr_third_result_relevant():
+    from app.evaluator import mean_reciprocal_rank
+    assert round(mean_reciprocal_rank(["x", "y", "a"], ["a"]), 4) == round(1 / 3, 4)
+
+
+def test_mrr_no_relevant_retrieved():
+    from app.evaluator import mean_reciprocal_rank
+    assert mean_reciprocal_rank(["x", "y", "z"], ["a"]) == 0.0
+
+
+def test_mrr_empty_relevant_ids():
+    from app.evaluator import mean_reciprocal_rank
+    assert mean_reciprocal_rank(["a", "b"], []) == 0.0
+
+
+def test_mrr_rewards_earlier_rank():
+    from app.evaluator import mean_reciprocal_rank
+    high = mean_reciprocal_rank(["a", "x", "y"], ["a"])
+    low  = mean_reciprocal_rank(["x", "y", "a"], ["a"])
+    assert high > low
+
+
+def test_mrr_multiple_relevant_uses_first_hit():
+    from app.evaluator import mean_reciprocal_rank
+    # "b" appears at rank 2; "a" at rank 1 — first hit drives the score.
+    assert mean_reciprocal_rank(["a", "b", "c"], ["a", "b"]) == 1.0
+
+
+# ── faithfulness() unit tests ─────────────────────────────
+
+def test_faithfulness_fully_grounded():
+    from app.evaluator import faithfulness
+    chunks = [{"text": "Supervised learning uses labeled training data to learn a mapping."}]
+    answer = "Supervised learning uses labeled training data."
+    score = faithfulness(answer, chunks)
+    assert score > 0.5
+
+
+def test_faithfulness_ungrounded_answer():
+    from app.evaluator import faithfulness
+    chunks = [{"text": "Photosynthesis converts sunlight into glucose."}]
+    answer = "Quantum mechanics describes particle wave duality."
+    score = faithfulness(answer, chunks)
+    assert score == 0.0
+
+
+def test_faithfulness_empty_answer():
+    from app.evaluator import faithfulness
+    chunks = [{"text": "Some context text here."}]
+    assert faithfulness("", chunks) == 0.0
+
+
+def test_faithfulness_empty_context():
+    from app.evaluator import faithfulness
+    assert faithfulness("The answer is here.", []) == 0.0
+
+
+def test_faithfulness_result_bounded():
+    from app.evaluator import faithfulness
+    chunks = [{"text": "Neural networks learn representations from data."}]
+    score = faithfulness("Neural networks learn from data.", chunks)
+    assert 0.0 <= score <= 1.0
+
+
+def test_faithfulness_multiple_chunks_increase_score():
+    from app.evaluator import faithfulness
+    chunks_one  = [{"text": "Overfitting occurs when a model memorizes training data."}]
+    chunks_many = [
+        {"text": "Overfitting occurs when a model memorizes training data."},
+        {"text": "Regularization helps reduce overfitting in machine learning models."},
+    ]
+    answer = "Overfitting happens when models memorize training data and regularization helps."
+    score_one  = faithfulness(answer, chunks_one)
+    score_many = faithfulness(answer, chunks_many)
+    assert score_many >= score_one
+
+
+# ── answer_relevance() unit tests ─────────────────────────
+
+def test_answer_relevance_full_overlap():
+    from app.evaluator import answer_relevance
+    query  = "overfitting regularization"
+    answer = "Overfitting can be reduced by regularization techniques."
+    score = answer_relevance(query, answer)
+    assert score == 1.0
+
+
+def test_answer_relevance_no_overlap():
+    from app.evaluator import answer_relevance
+    query  = "gradient descent optimization"
+    answer = "Photosynthesis converts sunlight into glucose."
+    score = answer_relevance(query, answer)
+    assert score == 0.0
+
+
+def test_answer_relevance_partial_overlap():
+    from app.evaluator import answer_relevance
+    query  = "supervised learning classification regression"
+    answer = "Supervised learning can solve classification problems."
+    score = answer_relevance(query, answer)
+    assert 0.0 < score < 1.0
+
+
+def test_answer_relevance_empty_query():
+    from app.evaluator import answer_relevance
+    assert answer_relevance("", "Some answer here.") == 0.0
+
+
+def test_answer_relevance_stopwords_only_query():
+    from app.evaluator import answer_relevance
+    assert answer_relevance("the a an is", "Something unrelated.") == 0.0
+
+
+def test_answer_relevance_result_bounded():
+    from app.evaluator import answer_relevance
+    score = answer_relevance("machine learning model", "Machine learning models generalize.")
+    assert 0.0 <= score <= 1.0
+
+
+def test_answer_relevance_longer_answer_does_not_inflate():
+    from app.evaluator import answer_relevance
+    query       = "supervised learning"
+    short_ans   = "Supervised learning uses labeled examples."
+    verbose_ans = "Supervised learning uses labeled examples. " * 20
+    assert answer_relevance(query, short_ans) == answer_relevance(query, verbose_ans)
