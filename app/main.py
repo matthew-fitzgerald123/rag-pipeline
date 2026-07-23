@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Any, AsyncIterator
+import json
 import os
 from dotenv import load_dotenv
 
@@ -85,7 +86,7 @@ def query(req: QueryReq, db: Session = Depends(get_db)):
 
 @app.post("/query/stream", tags=["rag"])
 async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
-    """Stream answer tokens as SSE events. Does not log to DB."""
+    """Stream answer tokens as SSE events, then log faithfulness to DB."""
     if vector_store.count() == 0:
         raise HTTPException(400, "No documents indexed -- run: make ingest")
 
@@ -96,8 +97,23 @@ async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
     chunks = rerank(req.query, candidates, req.top_k) if req.rerank else candidates[:req.top_k]
 
     async def event_generator() -> AsyncIterator[str]:
+        token_parts: list[str] = []
         async for payload in generator.answer_stream(req.query, chunks):
             yield f"data: {payload}\n\n"
+            if payload != "[DONE]":
+                try:
+                    token_parts.append(json.loads(payload)["token"])
+                except (json.JSONDecodeError, KeyError):
+                    pass
+        full_answer = "".join(token_parts)
+        log = QueryLog(
+            query=req.query,
+            answer=full_answer or "(empty stream)",
+            retrieved_ids=[c["chunk_id"] for c in chunks],
+            faithfulness=faithfulness(full_answer, chunks) if full_answer else None,
+        )
+        db.add(log)
+        db.commit()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

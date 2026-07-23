@@ -1180,3 +1180,126 @@ def test_stream_skips_reranker_when_rerank_false():
         mock_gen.answer_stream = _fake_stream_tokens
         client.post("/query/stream", json={"query": "What is ML?", "top_k": 3, "rerank": False})
     mock_rerank.assert_not_called()
+
+
+# ── /query/stream DB logging unit tests ──────────────────────
+
+def _override_db(mock_db):
+    from app.database import get_db
+    from app.main import app
+    app.dependency_overrides[get_db] = lambda: mock_db
+    return app
+
+
+def _clear_overrides():
+    from app.main import app
+    app.dependency_overrides.clear()
+
+
+def test_stream_logs_to_db_after_completion():
+    from unittest.mock import patch, MagicMock
+    mock_db = MagicMock()
+    _override_db(mock_db)
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _fake_stream_tokens
+            r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    finally:
+        _clear_overrides()
+    assert r.status_code == 200
+    mock_db.add.assert_called_once()
+    mock_db.commit.assert_called_once()
+
+
+def test_stream_log_accumulates_full_answer():
+    from unittest.mock import patch, MagicMock
+    mock_db = MagicMock()
+    _override_db(mock_db)
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _fake_stream_tokens
+            client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    finally:
+        _clear_overrides()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.answer == "hello world"
+
+
+def test_stream_log_stores_query():
+    from unittest.mock import patch, MagicMock
+    mock_db = MagicMock()
+    _override_db(mock_db)
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _fake_stream_tokens
+            client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    finally:
+        _clear_overrides()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.query == "What is ML?"
+
+
+def test_stream_log_stores_retrieved_ids():
+    from unittest.mock import patch, MagicMock
+    mock_db = MagicMock()
+    _override_db(mock_db)
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _fake_stream_tokens
+            client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    finally:
+        _clear_overrides()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.retrieved_ids == ["c1"]
+
+
+def test_stream_log_stores_faithfulness():
+    from unittest.mock import patch, MagicMock
+    mock_db = MagicMock()
+    _override_db(mock_db)
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _fake_stream_tokens
+            client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    finally:
+        _clear_overrides()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.faithfulness is not None
+    assert 0.0 <= log_obj.faithfulness <= 1.0
+
+
+def test_stream_empty_tokens_logs_fallback_answer():
+    from unittest.mock import patch, MagicMock
+    mock_db = MagicMock()
+    _override_db(mock_db)
+
+    async def _empty_stream(query, chunks, max_tokens=512):
+        yield "[DONE]"
+
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _empty_stream
+            client.post("/query/stream", json={"query": "q", "top_k": 3})
+    finally:
+        _clear_overrides()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.answer == "(empty stream)"
+    assert log_obj.faithfulness is None
