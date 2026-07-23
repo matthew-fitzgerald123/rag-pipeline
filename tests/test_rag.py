@@ -831,3 +831,204 @@ def test_build_prompt_inst_tags_wrap_content():
     prompt = _build_prompt("q", [{"text": "ctx"}])
     assert prompt.startswith("[INST]")
     assert prompt.endswith("[/INST]")
+
+
+# ── _tokenize() unit tests ────────────────────────────────
+
+def test_tokenize_lowercases_text():
+    from app.vector_store import _tokenize
+    result = _tokenize("Supervised Learning")
+    assert "supervised" in result
+    assert "learning" in result
+
+
+def test_tokenize_splits_into_words():
+    from app.vector_store import _tokenize
+    assert _tokenize("hello world") == ["hello", "world"]
+
+
+def test_tokenize_strips_punctuation():
+    from app.vector_store import _tokenize
+    result = _tokenize("hello, world!")
+    assert "hello" in result
+    assert "world" in result
+
+
+def test_tokenize_empty_string_returns_empty():
+    from app.vector_store import _tokenize
+    assert _tokenize("") == []
+
+
+def test_tokenize_includes_numeric_tokens():
+    from app.vector_store import _tokenize
+    result = _tokenize("top 5 results")
+    assert "5" in result
+
+
+# ── VectorStore._bm25_query() unit tests ─────────────────
+
+def test_bm25_query_no_index_returns_empty():
+    from app.vector_store import VectorStore
+    vs = VectorStore.__new__(VectorStore)
+    vs._bm25 = None
+    vs._bm25_ids = []
+    assert vs._bm25_query("anything", top_k=5) == {}
+
+
+def test_bm25_query_scores_in_unit_range():
+    from app.vector_store import VectorStore
+    from rank_bm25 import BM25Okapi
+    vs = VectorStore.__new__(VectorStore)
+    corpus = [["machine", "learning", "model"], ["learning", "algorithm"], ["deep", "network"]]
+    vs._bm25 = BM25Okapi(corpus)
+    vs._bm25_ids = ["c1", "c2", "c3"]
+    result = vs._bm25_query("learning model", top_k=5)
+    for score in result.values():
+        assert 0.0 <= score <= 1.0
+
+
+def test_bm25_query_best_match_normalized_to_one():
+    from app.vector_store import VectorStore
+    from rank_bm25 import BM25Okapi
+    vs = VectorStore.__new__(VectorStore)
+    # Needs >= 3 docs so BM25 IDF is positive for a term in only 1 doc.
+    # With 2 docs and df=1: IDF = log((2-1+0.5)/(1+0.5)) = log(1) = 0.
+    corpus = [["machine", "learning"], ["deep", "network"], ["natural", "language"]]
+    vs._bm25 = BM25Okapi(corpus)
+    vs._bm25_ids = ["c1", "c2", "c3"]
+    result = vs._bm25_query("machine", top_k=5)
+    # Only c1 matches "machine"; its raw score equals the max, so normalized to 1.0.
+    assert result.get("c1") == 1.0
+
+
+def test_bm25_query_non_matching_query_returns_empty():
+    from app.vector_store import VectorStore
+    from rank_bm25 import BM25Okapi
+    vs = VectorStore.__new__(VectorStore)
+    corpus = [["hello", "world"], ["foo", "bar"]]
+    vs._bm25 = BM25Okapi(corpus)
+    vs._bm25_ids = ["c1", "c2"]
+    assert vs._bm25_query("zzz_nonexistent_term", top_k=5) == {}
+
+
+# ── VectorStore hybrid fusion unit tests ─────────────────
+
+def test_query_fuses_dense_score_with_alpha():
+    from app.vector_store import VectorStore, HYBRID_ALPHA
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.get.return_value = {
+        "ids": ["c1"], "documents": ["text"], "metadatas": [{}],
+    }
+    with patch.object(vs, "_dense_query", return_value={"c1": 0.8}), \
+         patch.object(vs, "_bm25_query", return_value={}):
+        result = vs.query("test", top_k=1)
+    assert len(result) == 1
+    assert result[0]["score"] == round(HYBRID_ALPHA * 0.8, 4)
+
+
+def test_query_fuses_bm25_score_with_one_minus_alpha():
+    from app.vector_store import VectorStore, HYBRID_ALPHA
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.get.return_value = {
+        "ids": ["c1"], "documents": ["text"], "metadatas": [{}],
+    }
+    with patch.object(vs, "_dense_query", return_value={}), \
+         patch.object(vs, "_bm25_query", return_value={"c1": 0.6}):
+        result = vs.query("test", top_k=1)
+    assert len(result) == 1
+    assert result[0]["score"] == round((1 - HYBRID_ALPHA) * 0.6, 4)
+
+
+def test_query_combines_both_scores():
+    from app.vector_store import VectorStore, HYBRID_ALPHA
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.get.return_value = {
+        "ids": ["c1"], "documents": ["text"], "metadatas": [{}],
+    }
+    with patch.object(vs, "_dense_query", return_value={"c1": 0.8}), \
+         patch.object(vs, "_bm25_query", return_value={"c1": 0.6}):
+        result = vs.query("test", top_k=1)
+    expected = round(HYBRID_ALPHA * 0.8 + (1 - HYBRID_ALPHA) * 0.6, 4)
+    assert result[0]["score"] == expected
+
+
+def test_query_exposes_dense_and_bm25_scores_separately():
+    from app.vector_store import VectorStore
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.get.return_value = {
+        "ids": ["c1"], "documents": ["text"], "metadatas": [{}],
+    }
+    with patch.object(vs, "_dense_query", return_value={"c1": 0.8}), \
+         patch.object(vs, "_bm25_query", return_value={"c1": 0.5}):
+        result = vs.query("test", top_k=1)
+    assert result[0]["dense_score"] == 0.8
+    assert result[0]["bm25_score"] == 0.5
+
+
+def test_query_sorts_results_by_fused_score_descending():
+    from app.vector_store import VectorStore
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.get.return_value = {
+        "ids": ["c1", "c2"],
+        "documents": ["text1", "text2"],
+        "metadatas": [{}, {}],
+    }
+    # c2 has higher dense but c1 has higher BM25 — combined order depends on alpha
+    with patch.object(vs, "_dense_query", return_value={"c1": 0.9, "c2": 0.3}), \
+         patch.object(vs, "_bm25_query", return_value={"c1": 0.1, "c2": 0.2}):
+        result = vs.query("test", top_k=2)
+    assert len(result) == 2
+    assert result[0]["score"] >= result[1]["score"]
+
+
+def test_query_respects_top_k():
+    from app.vector_store import VectorStore
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.get.return_value = {
+        "ids": ["c1", "c2"],
+        "documents": ["t1", "t2"],
+        "metadatas": [{}, {}],
+    }
+    with patch.object(vs, "_dense_query", return_value={"c1": 0.9, "c2": 0.8, "c3": 0.7}), \
+         patch.object(vs, "_bm25_query", return_value={}):
+        result = vs.query("test", top_k=2)
+    assert len(result) <= 2
+
+
+def test_query_returns_empty_when_no_results():
+    from app.vector_store import VectorStore
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    with patch.object(vs, "_dense_query", return_value={}), \
+         patch.object(vs, "_bm25_query", return_value={}):
+        result = vs.query("test", top_k=5)
+    assert result == []
+
+
+def test_query_result_has_required_fields():
+    from app.vector_store import VectorStore
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.get.return_value = {
+        "ids": ["c1"], "documents": ["some text"], "metadatas": [{"title": "Doc"}],
+    }
+    with patch.object(vs, "_dense_query", return_value={"c1": 0.7}), \
+         patch.object(vs, "_bm25_query", return_value={"c1": 0.4}):
+        result = vs.query("test", top_k=1)
+    assert len(result) == 1
+    for field in ("chunk_id", "text", "metadata", "score", "dense_score", "bm25_score"):
+        assert field in result[0]
