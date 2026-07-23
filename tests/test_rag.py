@@ -475,3 +475,194 @@ def test_answer_relevance_longer_answer_does_not_inflate():
     short_ans   = "Supervised learning uses labeled examples."
     verbose_ans = "Supervised learning uses labeled examples. " * 20
     assert answer_relevance(query, short_ans) == answer_relevance(query, verbose_ans)
+
+
+# ── chunk_document() unit tests ───────────────────────────
+
+def test_chunker_empty_text_returns_empty():
+    from app.chunker import chunk_document
+    assert chunk_document("doc1", "", {}) == []
+
+
+def test_chunker_whitespace_only_returns_empty():
+    from app.chunker import chunk_document
+    assert chunk_document("doc1", "   \n\t  ", {}) == []
+
+
+def test_chunker_short_text_produces_one_chunk():
+    from app.chunker import chunk_document
+    chunks = chunk_document("doc1", "Hello world.", {}, chunk_size=512, overlap=64)
+    assert len(chunks) == 1
+    assert chunks[0].text == "Hello world."
+
+
+def test_chunker_long_text_produces_multiple_chunks():
+    from app.chunker import chunk_document
+    text = "x" * 1000
+    chunks = chunk_document("doc1", text, {}, chunk_size=512, overlap=64)
+    assert len(chunks) > 1
+
+
+def test_chunker_chunk_ids_follow_naming_convention():
+    from app.chunker import chunk_document
+    text = "w" * 1000
+    chunks = chunk_document("mydoc", text, {}, chunk_size=512, overlap=64)
+    for i, chunk in enumerate(chunks):
+        assert chunk.chunk_id == f"mydoc_chunk_{i}"
+
+
+def test_chunker_doc_id_attached_to_each_chunk():
+    from app.chunker import chunk_document
+    chunks = chunk_document("docA", "Some text here.", {})
+    assert all(c.doc_id == "docA" for c in chunks)
+
+
+def test_chunker_metadata_preserved_in_each_chunk():
+    from app.chunker import chunk_document
+    meta = {"source": "test.txt", "author": "Alice"}
+    chunks = chunk_document("doc1", "Sample text.", meta)
+    for chunk in chunks:
+        assert chunk.metadata["source"] == "test.txt"
+        assert chunk.metadata["author"] == "Alice"
+
+
+def test_chunker_metadata_includes_chunk_index():
+    from app.chunker import chunk_document
+    text = "w" * 1000
+    chunks = chunk_document("doc1", text, {}, chunk_size=512, overlap=64)
+    for i, chunk in enumerate(chunks):
+        assert chunk.metadata["chunk_index"] == i
+
+
+def test_chunker_metadata_includes_doc_id():
+    from app.chunker import chunk_document
+    chunks = chunk_document("docB", "Content here.", {"title": "T"})
+    assert all(c.metadata["doc_id"] == "docB" for c in chunks)
+
+
+def test_chunker_chunk_size_respected():
+    from app.chunker import chunk_document
+    text = "a" * 2000
+    chunks = chunk_document("doc1", text, {}, chunk_size=200, overlap=20)
+    for chunk in chunks:
+        assert len(chunk.text) <= 200
+
+
+def test_chunker_overlap_shared_content():
+    from app.chunker import chunk_document
+    # Build a text where overlap is detectable character-by-character.
+    text = "abcdefghij" * 10
+    chunks = chunk_document("doc1", text, {}, chunk_size=20, overlap=5)
+    assert len(chunks) >= 2
+    # The tail of chunk[0] and the head of chunk[1] must share characters.
+    tail = chunks[0].text[-5:]
+    head = chunks[1].text[:5]
+    assert tail == head
+
+
+def test_chunker_text_exactly_at_chunk_size():
+    from app.chunker import chunk_document
+    text = "b" * 512
+    chunks = chunk_document("doc1", text, {}, chunk_size=512, overlap=0)
+    assert len(chunks) == 1
+    assert chunks[0].text == text
+
+
+def test_chunker_returns_chunk_dataclass():
+    from app.chunker import chunk_document, Chunk
+    chunks = chunk_document("doc1", "Hello.", {})
+    assert all(isinstance(c, Chunk) for c in chunks)
+
+
+# ── citations._tokens() and _overlap() unit tests ─────────
+
+def test_citations_tokens_lowercases_and_splits():
+    from app.citations import _tokens
+    result = _tokens("Supervised Learning")
+    assert "supervised" in result
+    assert "learning" in result
+
+
+def test_citations_tokens_removes_stopwords():
+    from app.citations import _tokens
+    result = _tokens("the cat is on the mat")
+    assert "the" not in result
+    assert "is" not in result
+    assert "on" not in result
+    assert "cat" in result
+    assert "mat" in result
+
+
+def test_citations_tokens_empty_string():
+    from app.citations import _tokens
+    assert _tokens("") == set()
+
+
+def test_citations_overlap_identical_sets():
+    from app.citations import _overlap
+    s = {"neural", "network", "learns"}
+    assert _overlap(s, s) == 1.0
+
+
+def test_citations_overlap_disjoint_sets():
+    from app.citations import _overlap
+    assert _overlap({"a", "b"}, {"c", "d"}) == 0.0
+
+
+def test_citations_overlap_partial():
+    from app.citations import _overlap
+    a = {"a", "b", "c"}
+    b = {"a", "b", "x"}
+    assert round(_overlap(a, b), 4) == round(2 / 3, 4)
+
+
+def test_citations_overlap_empty_first():
+    from app.citations import _overlap
+    assert _overlap(set(), {"a", "b"}) == 0.0
+
+
+def test_citations_overlap_empty_second():
+    from app.citations import _overlap
+    assert _overlap({"a", "b"}, set()) == 0.0
+
+
+def test_extract_citations_empty_answer():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "Some text.", "metadata": {}}]
+    result = extract_citations("", chunks)
+    assert result == []
+
+
+def test_extract_citations_no_chunks_above_threshold():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "Photosynthesis converts sunlight.", "metadata": {}}]
+    result = extract_citations("Quantum mechanics describes particles.", chunks, threshold=0.8)
+    assert all(len(entry["citations"]) == 0 for entry in result)
+
+
+def test_extract_citations_multiple_sentences():
+    from app.citations import extract_citations
+    chunks = [
+        {"chunk_id": "c1", "text": "Neural networks learn representations.", "metadata": {"title": "ML"}},
+        {"chunk_id": "c2", "text": "Overfitting occurs when models memorize data.", "metadata": {"title": "ML"}},
+    ]
+    answer = "Neural networks learn features. Overfitting is a common problem."
+    result = extract_citations(answer, chunks, threshold=0.2)
+    assert len(result) == 2
+    sentences = [r["sentence"] for r in result]
+    assert any("Neural" in s for s in sentences)
+    assert any("Overfitting" in s for s in sentences)
+
+
+def test_extract_citations_sorted_by_overlap_descending():
+    from app.citations import extract_citations
+    chunks = [
+        {"chunk_id": "c1", "text": "supervised learning uses labeled training data classification regression", "metadata": {}},
+        {"chunk_id": "c2", "text": "supervised training", "metadata": {}},
+    ]
+    answer = "Supervised learning uses labeled training data for classification."
+    result = extract_citations(answer, chunks, threshold=0.1)
+    assert len(result) >= 1
+    cites = result[0]["citations"]
+    if len(cites) >= 2:
+        assert cites[0]["overlap"] >= cites[1]["overlap"]
