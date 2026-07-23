@@ -1378,3 +1378,165 @@ def test_health_model_loaded_false_when_not_loaded():
     finally:
         app.dependency_overrides.clear()
     assert r.json()["model_loaded"] is False
+
+
+# ── answer_relevance DB persistence unit tests ────────────────
+
+def test_query_stores_answer_relevance_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            r = client.post("/query", json={"query": "supervised learning", "top_k": 1})
+    finally:
+        app.dependency_overrides.clear()
+    assert r.status_code == 200
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.answer_relevance is not None
+    assert 0.0 <= log_obj.answer_relevance <= 1.0
+
+
+def test_query_answer_relevance_matches_evaluator():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    from app.evaluator import answer_relevance as _ar
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    query = "supervised learning classification"
+    answer = "Supervised learning solves classification problems."
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer.return_value = answer
+            client.post("/query", json={"query": query, "top_k": 1})
+    finally:
+        app.dependency_overrides.clear()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.answer_relevance == _ar(query, answer)
+
+
+def test_query_eval_stores_answer_relevance_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            r = client.post("/query/eval", json={
+                "query": "supervised learning",
+                "relevant_doc_ids": ["c1"],
+                "top_k": 1,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    assert r.status_code == 200
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.answer_relevance is not None
+    assert 0.0 <= log_obj.answer_relevance <= 1.0
+
+
+def test_stream_stores_answer_relevance_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    _override_db(mock_db)
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _fake_stream_tokens
+            client.post("/query/stream", json={"query": "supervised learning", "top_k": 3})
+    finally:
+        _clear_overrides()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.answer_relevance is not None
+    assert 0.0 <= log_obj.answer_relevance <= 1.0
+
+
+def test_stream_empty_tokens_stores_null_answer_relevance():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    _override_db(mock_db)
+
+    async def _empty_stream_2(query, chunks, max_tokens=512):
+        yield "[DONE]"
+
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _empty_stream_2
+            client.post("/query/stream", json={"query": "q", "top_k": 3})
+    finally:
+        _clear_overrides()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.answer_relevance is None
+
+
+# ── /eval/history answer_relevance field tests ────────────────
+
+def test_eval_history_includes_answer_relevance_field():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    from app.models import QueryLog as QL
+    mock_log = MagicMock(spec=QL)
+    mock_log.query = "What is ML?"
+    mock_log.answer = "Machine learning is a field of AI."
+    mock_log.faithfulness = 0.8
+    mock_log.answer_relevance = 0.75
+    mock_log.hit_rate = None
+    mock_log.mrr = None
+    mock_log.ndcg = None
+    mock_log.created_at = __import__("datetime").datetime(2026, 1, 1)
+    mock_db = MagicMock()
+    mock_db.query.return_value.order_by.return_value.limit.return_value.all.return_value = [mock_log]
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        r = client.get("/eval/history?limit=1")
+    finally:
+        app.dependency_overrides.clear()
+    assert r.status_code == 200
+    rows = r.json()
+    assert len(rows) == 1
+    assert "answer_relevance" in rows[0]
+    assert rows[0]["answer_relevance"] == 0.75
+
+
+def test_eval_history_answer_relevance_can_be_null():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    from app.models import QueryLog as QL
+    mock_log = MagicMock(spec=QL)
+    mock_log.query = "What is ML?"
+    mock_log.answer = "Machine learning is a field of AI."
+    mock_log.faithfulness = None
+    mock_log.answer_relevance = None
+    mock_log.hit_rate = None
+    mock_log.mrr = None
+    mock_log.ndcg = None
+    mock_log.created_at = __import__("datetime").datetime(2026, 1, 1)
+    mock_db = MagicMock()
+    mock_db.query.return_value.order_by.return_value.limit.return_value.all.return_value = [mock_log]
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        r = client.get("/eval/history?limit=1")
+    finally:
+        app.dependency_overrides.clear()
+    rows = r.json()
+    assert "answer_relevance" in rows[0]
+    assert rows[0]["answer_relevance"] is None
