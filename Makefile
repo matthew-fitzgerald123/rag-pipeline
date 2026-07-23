@@ -4,6 +4,9 @@ serve:
 test:
 	pytest tests/ -v
 
+test-unit:
+	pytest tests/ -m "not integration" -v
+
 demo:
 	python notebooks/demo.py
 

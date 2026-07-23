@@ -11,6 +11,7 @@ from app.main import app
 
 client = TestClient(app)
 
+@pytest.mark.integration
 def test_health():
     r = client.get("/health")
     assert r.status_code == 200
@@ -18,11 +19,13 @@ def test_health():
     assert data["status"] == "ok"
     assert data["chunks_indexed"] > 0
 
+@pytest.mark.integration
 def test_index_stats():
     r = client.get("/index/stats")
     assert r.status_code == 200
     assert r.json()["total_chunks"] > 0
 
+@pytest.mark.integration
 def test_query_returns_answer():
     r = client.post("/query", json={
         "query": "What is supervised learning?",
@@ -37,6 +40,7 @@ def test_query_returns_answer():
     assert "eval" in data
     assert "faithfulness" in data["eval"]
 
+@pytest.mark.integration
 def test_query_eval_with_ground_truth():
     r = client.post("/query", json={"query": "overfitting", "top_k": 1})
     chunk_id = r.json()["chunks"][0]["chunk_id"]
@@ -86,6 +90,7 @@ def test_ndcg_respects_k_cutoff():
     # The single relevant doc sits at rank 3, outside k=2, so it cannot contribute.
     assert ndcg_at_k(["x", "y", "a"], ["a"], k=2) == 0.0
 
+@pytest.mark.integration
 def test_eval_summary():
     r = client.get("/eval/summary")
     assert r.status_code == 200
@@ -93,6 +98,7 @@ def test_eval_summary():
     assert "total_queries" in data
     assert data["total_queries"] > 0
 
+@pytest.mark.integration
 def test_eval_summary_includes_avg_ndcg():
     # Drive a /query/eval request so ndcg is logged, then confirm summary surfaces it.
     r_q = client.post("/query", json={"query": "overfitting", "top_k": 1})
@@ -108,11 +114,13 @@ def test_eval_summary_includes_avg_ndcg():
     assert "avg_ndcg" in data
     assert data["avg_ndcg"] is not None
 
+@pytest.mark.integration
 def test_eval_history():
     r = client.get("/eval/history?limit=5")
     assert r.status_code == 200
     assert isinstance(r.json(), list)
 
+@pytest.mark.integration
 def test_eval_history_includes_ndcg_field():
     r = client.get("/eval/history?limit=5")
     assert r.status_code == 200
@@ -121,11 +129,12 @@ def test_eval_history_includes_ndcg_field():
     for row in rows:
         assert "ndcg" in row
 
+@pytest.mark.integration
 def test_empty_query_still_returns():
     r = client.post("/query", json={"query": "xyzzy nonsense query 12345", "top_k": 3})
     assert r.status_code in [200, 404]
 
-
+@pytest.mark.integration
 def test_query_returns_citations():
     r = client.post("/query", json={"query": "What is supervised learning?", "top_k": 3})
     assert r.status_code == 200

@@ -1,12 +1,35 @@
 name: CI
 
 on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
   workflow_dispatch:
 
 jobs:
-  test:
-    name: Test
+  unit-tests:
+    name: Unit Tests
     runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: pytest tests/ -m "not integration" -v --tb=short
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: macos-14
+    if: github.event_name == 'workflow_dispatch'
 
     services:
       postgres:
@@ -42,7 +65,7 @@ jobs:
       - name: Ingest sample documents
         run: python scripts/ingest.py
 
-      - name: Run tests
+      - name: Run all tests
         run: pytest tests/ -v --tb=short
 
   terraform-validate:
