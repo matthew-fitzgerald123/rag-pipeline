@@ -1303,3 +1303,78 @@ def test_stream_empty_tokens_logs_fallback_answer():
     log_obj = mock_db.add.call_args[0][0]
     assert log_obj.answer == "(empty stream)"
     assert log_obj.faithfulness is None
+
+
+# ── /health DB probe unit tests ───────────────────────────────
+
+def test_health_returns_200_when_db_ok():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        r = client.get("/health")
+    finally:
+        app.dependency_overrides.clear()
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+    assert r.json()["db"] == "ok"
+
+
+def test_health_returns_503_when_db_unreachable():
+    from unittest.mock import patch, MagicMock
+    from sqlalchemy.exc import OperationalError
+    from app.database import get_db
+
+    mock_db = MagicMock()
+    mock_db.execute.side_effect = OperationalError("could not connect", None, None)
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        r = client.get("/health")
+    finally:
+        app.dependency_overrides.clear()
+    assert r.status_code == 503
+    assert r.json()["status"] == "degraded"
+    assert r.json()["db"] == "unreachable"
+
+
+def test_health_includes_chunks_indexed():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs:
+            mock_vs.count.return_value = 42
+            r = client.get("/health")
+    finally:
+        app.dependency_overrides.clear()
+    assert r.json()["chunks_indexed"] == 42
+
+
+def test_health_includes_model_loaded():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.generator") as mock_gen:
+            mock_gen.model = object()
+            r = client.get("/health")
+    finally:
+        app.dependency_overrides.clear()
+    assert r.json()["model_loaded"] is True
+
+
+def test_health_model_loaded_false_when_not_loaded():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.generator") as mock_gen:
+            mock_gen.model = None
+            r = client.get("/health")
+    finally:
+        app.dependency_overrides.clear()
+    assert r.json()["model_loaded"] is False

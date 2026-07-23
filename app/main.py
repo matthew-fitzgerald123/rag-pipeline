@@ -1,7 +1,7 @@
 from __future__ import annotations
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Any, AsyncIterator
@@ -214,9 +214,22 @@ def index_stats():
     }
 
 @app.get("/health")
-def health():
-    return {
-        "status":        "ok",
-        "chunks_indexed": vector_store.count(),
-        "model_loaded":  generator.model is not None,
-    }
+def health(db: Session = Depends(get_db)):
+    db_ok = False
+    try:
+        db.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:
+        pass
+
+    status = "ok" if db_ok else "degraded"
+    code = 200 if db_ok else 503
+    return JSONResponse(
+        status_code=code,
+        content={
+            "status":         status,
+            "chunks_indexed": vector_store.count(),
+            "model_loaded":   generator.model is not None,
+            "db":             "ok" if db_ok else "unreachable",
+        },
+    )
