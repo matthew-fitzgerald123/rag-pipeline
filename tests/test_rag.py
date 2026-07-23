@@ -583,6 +583,30 @@ def test_chunker_returns_chunk_dataclass():
     assert all(isinstance(c, Chunk) for c in chunks)
 
 
+def test_chunker_overlap_equal_to_chunk_size_raises():
+    from app.chunker import chunk_document
+    with pytest.raises(ValueError, match="overlap"):
+        chunk_document("doc1", "some text", {}, chunk_size=64, overlap=64)
+
+
+def test_chunker_overlap_greater_than_chunk_size_raises():
+    from app.chunker import chunk_document
+    with pytest.raises(ValueError, match="overlap"):
+        chunk_document("doc1", "some text", {}, chunk_size=64, overlap=100)
+
+
+def test_chunker_overlap_just_below_chunk_size_is_valid():
+    from app.chunker import chunk_document
+    chunks = chunk_document("doc1", "x" * 200, {}, chunk_size=64, overlap=63)
+    assert len(chunks) >= 1
+
+
+def test_chunker_zero_overlap_is_valid():
+    from app.chunker import chunk_document
+    chunks = chunk_document("doc1", "Hello world.", {}, chunk_size=512, overlap=0)
+    assert len(chunks) == 1
+
+
 # ── citations._tokens() and _overlap() unit tests ─────────
 
 def test_citations_tokens_lowercases_and_splits():
