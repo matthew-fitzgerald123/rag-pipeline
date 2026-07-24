@@ -1982,3 +1982,166 @@ def test_query_eval_commits_to_db():
         app.dependency_overrides.clear()
     mock_db.add.assert_called_once()
     mock_db.commit.assert_called_once()
+
+
+# ── /eval/summary unit tests ──────────────────────────────────
+
+import datetime as _dt
+
+
+def _make_log(**kwargs):
+    from unittest.mock import MagicMock
+    from app.models import QueryLog as QL
+    log = MagicMock(spec=QL)
+    defaults = dict(
+        query="What is ML?",
+        answer="Machine learning is a field of AI.",
+        faithfulness=None,
+        answer_relevance=None,
+        hit_rate=None,
+        mrr=None,
+        ndcg=None,
+        created_at=_dt.datetime(2026, 1, 1),
+    )
+    defaults.update(kwargs)
+    for k, v in defaults.items():
+        setattr(log, k, v)
+    return log
+
+
+def _summary_with_logs(logs):
+    from unittest.mock import MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    mock_db.query.return_value.all.return_value = logs
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        r = client.get("/eval/summary")
+    finally:
+        app.dependency_overrides.clear()
+    return r
+
+
+def test_eval_summary_empty_db_returns_message():
+    r = _summary_with_logs([])
+    assert r.status_code == 200
+    assert "message" in r.json()
+
+
+def test_eval_summary_total_queries_count():
+    logs = [_make_log(faithfulness=0.8), _make_log(faithfulness=0.6)]
+    r = _summary_with_logs(logs)
+    assert r.json()["total_queries"] == 2
+
+
+def test_eval_summary_avg_faithfulness_computed():
+    logs = [_make_log(faithfulness=0.8), _make_log(faithfulness=0.6)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_faithfulness"] == round((0.8 + 0.6) / 2, 4)
+
+
+def test_eval_summary_avg_faithfulness_excludes_none():
+    logs = [_make_log(faithfulness=0.8), _make_log(faithfulness=None)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_faithfulness"] == 0.8
+
+
+def test_eval_summary_avg_faithfulness_all_none_returns_none():
+    logs = [_make_log(faithfulness=None), _make_log(faithfulness=None)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_faithfulness"] is None
+
+
+def test_eval_summary_avg_hit_rate_computed():
+    logs = [_make_log(hit_rate=1.0), _make_log(hit_rate=0.5)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_hit_rate"] == round((1.0 + 0.5) / 2, 4)
+
+
+def test_eval_summary_avg_hit_rate_excludes_none():
+    logs = [_make_log(hit_rate=0.75), _make_log(hit_rate=None)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_hit_rate"] == 0.75
+
+
+def test_eval_summary_avg_mrr_computed():
+    logs = [_make_log(mrr=1.0), _make_log(mrr=0.5)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_mrr"] == round((1.0 + 0.5) / 2, 4)
+
+
+def test_eval_summary_avg_mrr_excludes_none():
+    logs = [_make_log(mrr=None), _make_log(mrr=0.3333)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_mrr"] == 0.3333
+
+
+def test_eval_summary_avg_ndcg_computed():
+    logs = [_make_log(ndcg=1.0), _make_log(ndcg=0.6309)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_ndcg"] == round((1.0 + 0.6309) / 2, 4)
+
+
+def test_eval_summary_avg_ndcg_excludes_none():
+    logs = [_make_log(ndcg=0.8), _make_log(ndcg=None)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_ndcg"] == 0.8
+
+
+def test_eval_summary_avg_ndcg_all_none_returns_none():
+    logs = [_make_log(ndcg=None)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_ndcg"] is None
+
+
+def test_eval_summary_avg_answer_relevance_uses_stored_value():
+    logs = [_make_log(
+        query="overfitting regularization",
+        answer="Overfitting can be reduced by regularization.",
+        answer_relevance=0.5,
+    )]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_answer_relevance"] == 0.5
+
+
+def test_eval_summary_avg_answer_relevance_falls_back_to_computed():
+    from app.evaluator import answer_relevance as _ar
+    query = "supervised learning"
+    answer = "Supervised learning uses labeled data."
+    logs = [_make_log(query=query, answer=answer, answer_relevance=None)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_answer_relevance"] == _ar(query, answer)
+
+
+def test_eval_summary_avg_answer_relevance_mixes_stored_and_fallback():
+    from app.evaluator import answer_relevance as _ar
+    query = "gradient descent"
+    answer = "Gradient descent minimizes loss."
+    computed = _ar(query, answer)
+    logs = [
+        _make_log(query=query, answer=answer, answer_relevance=0.9),
+        _make_log(query=query, answer=answer, answer_relevance=None),
+    ]
+    r = _summary_with_logs(logs)
+    expected = round((0.9 + computed) / 2, 4)
+    assert r.json()["avg_answer_relevance"] == expected
+
+
+def test_eval_summary_single_log_returns_its_own_values():
+    logs = [_make_log(faithfulness=0.7, hit_rate=1.0, mrr=1.0, ndcg=1.0, answer_relevance=0.6)]
+    r = _summary_with_logs(logs)
+    data = r.json()
+    assert data["total_queries"] == 1
+    assert data["avg_faithfulness"] == 0.7
+    assert data["avg_hit_rate"] == 1.0
+    assert data["avg_mrr"] == 1.0
+    assert data["avg_ndcg"] == 1.0
+    assert data["avg_answer_relevance"] == 0.6
+
+
+def test_eval_summary_averages_rounded_to_four_decimals():
+    logs = [_make_log(faithfulness=1 / 3)]
+    r = _summary_with_logs(logs)
+    avg = r.json()["avg_faithfulness"]
+    assert avg == round(1 / 3, 4)
+    assert len(str(avg).split(".")[-1]) <= 4
