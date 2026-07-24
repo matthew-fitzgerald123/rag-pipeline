@@ -309,6 +309,88 @@ def test_answer_stream_passes_built_prompt():
     assert captured["prompt"] == _build_prompt("What is ML?", chunks)
 
 
+# ── Generator.answer() unit tests ────────────────────────
+
+def test_answer_raises_when_model_not_loaded():
+    from app.generator import Generator
+    gen = Generator()
+    gen.model = None
+    with pytest.raises(RuntimeError, match="Generator not loaded"):
+        gen.answer("query", [{"text": "ctx"}])
+
+
+def test_answer_calls_generate_with_correct_prompt():
+    from app.generator import Generator, _build_prompt
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    chunks = [{"text": "context here"}]
+    captured = {}
+    with patch("app.generator.generate", side_effect=lambda m, t, prompt, max_tokens, verbose: captured.update({"prompt": prompt}) or "answer") as _:
+        gen.answer("What is ML?", chunks)
+    assert captured["prompt"] == _build_prompt("What is ML?", chunks)
+
+
+def test_answer_passes_max_tokens():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    captured = {}
+    with patch("app.generator.generate", side_effect=lambda m, t, prompt, max_tokens, verbose: captured.update({"max_tokens": max_tokens}) or "response"):
+        gen.answer("q", [{"text": "ctx"}], max_tokens=256)
+    assert captured["max_tokens"] == 256
+
+
+def test_answer_default_max_tokens_is_512():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    captured = {}
+    with patch("app.generator.generate", side_effect=lambda m, t, prompt, max_tokens, verbose: captured.update({"max_tokens": max_tokens}) or "response"):
+        gen.answer("q", [{"text": "ctx"}])
+    assert captured["max_tokens"] == 512
+
+
+def test_answer_strips_whitespace_from_response():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    with patch("app.generator.generate", return_value="  padded answer  \n"):
+        result = gen.answer("q", [{"text": "ctx"}])
+    assert result == "padded answer"
+
+
+def test_answer_returns_generate_output():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    with patch("app.generator.generate", return_value="The answer."):
+        result = gen.answer("q", [{"text": "ctx"}])
+    assert result == "The answer."
+
+
+def test_answer_passes_model_and_tokenizer_to_generate():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    gen.model = MagicMock(name="the_model")
+    gen.tokenizer = MagicMock(name="the_tokenizer")
+    captured = {}
+    with patch("app.generator.generate", side_effect=lambda m, t, prompt, max_tokens, verbose: captured.update({"model": m, "tokenizer": t}) or "ans"):
+        gen.answer("q", [{"text": "ctx"}])
+    assert captured["model"] is gen.model
+    assert captured["tokenizer"] is gen.tokenizer
+
+
 # ── hit_rate() unit tests ─────────────────────────────────
 
 def test_hit_rate_all_relevant_retrieved():
