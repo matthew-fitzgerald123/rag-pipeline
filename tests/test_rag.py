@@ -2339,3 +2339,90 @@ def test_index_stats_hybrid_alpha_in_valid_range():
         r = client.get("/index/stats")
     alpha = r.json()["hybrid_alpha"]
     assert 0.0 <= alpha <= 1.0
+
+
+# ── /eval/history unit tests ──────────────────────────────────
+
+def _history_with_logs(logs, limit=20):
+    from unittest.mock import MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    mock_db.query.return_value.order_by.return_value.limit.return_value.all.return_value = logs
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        r = client.get(f"/eval/history?limit={limit}")
+    finally:
+        app.dependency_overrides.clear()
+    return r
+
+
+def test_eval_history_returns_empty_list_when_no_logs():
+    r = _history_with_logs([])
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_eval_history_has_all_required_fields():
+    log = _make_log(faithfulness=0.7, hit_rate=1.0, mrr=0.5, ndcg=0.8, answer_relevance=0.6)
+    r = _history_with_logs([log])
+    row = r.json()[0]
+    for field in ("query", "answer", "faithfulness", "answer_relevance", "hit_rate", "mrr", "ndcg", "created_at"):
+        assert field in row, f"missing field: {field}"
+
+
+def test_eval_history_short_answer_not_truncated():
+    short_answer = "A short answer."
+    log = _make_log(answer=short_answer)
+    r = _history_with_logs([log])
+    assert r.json()[0]["answer"] == short_answer
+
+
+def test_eval_history_truncates_long_answers():
+    long_answer = "x" * 201
+    log = _make_log(answer=long_answer)
+    r = _history_with_logs([log])
+    assert r.json()[0]["answer"] == "x" * 200 + "..."
+
+
+def test_eval_history_answer_exactly_200_chars_not_truncated():
+    answer_200 = "y" * 200
+    log = _make_log(answer=answer_200)
+    r = _history_with_logs([log])
+    assert r.json()[0]["answer"] == answer_200
+
+
+def test_eval_history_truncated_answer_ends_with_ellipsis():
+    log = _make_log(answer="z" * 300)
+    r = _history_with_logs([log])
+    assert r.json()[0]["answer"].endswith("...")
+
+
+def test_eval_history_respects_limit_parameter():
+    from unittest.mock import MagicMock
+    from app.database import get_db
+    logs = [_make_log() for _ in range(5)]
+    mock_db = MagicMock()
+    mock_db.query.return_value.order_by.return_value.limit.return_value.all.return_value = logs
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        client.get("/eval/history?limit=5")
+    finally:
+        app.dependency_overrides.clear()
+    mock_db.query.return_value.order_by.return_value.limit.assert_called_once_with(5)
+
+
+def test_eval_history_created_at_is_string():
+    log = _make_log()
+    r = _history_with_logs([log])
+    assert isinstance(r.json()[0]["created_at"], str)
+
+
+def test_eval_history_null_metric_fields_preserved():
+    log = _make_log(faithfulness=None, hit_rate=None, mrr=None, ndcg=None, answer_relevance=None)
+    r = _history_with_logs([log])
+    row = r.json()[0]
+    assert row["faithfulness"] is None
+    assert row["hit_rate"] is None
+    assert row["mrr"] is None
+    assert row["ndcg"] is None
+    assert row["answer_relevance"] is None
