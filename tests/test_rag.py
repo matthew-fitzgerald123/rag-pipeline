@@ -2145,3 +2145,197 @@ def test_eval_summary_averages_rounded_to_four_decimals():
     avg = r.json()["avg_faithfulness"]
     assert avg == round(1 / 3, 4)
     assert len(str(avg).split(".")[-1]) <= 4
+
+
+# ── /query (POST) core behavior unit tests ───────────────────
+
+def test_query_empty_index_returns_400():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 0
+        r = client.post("/query", json={"query": "What is ML?", "top_k": 3})
+    assert r.status_code == 400
+
+
+def test_query_no_candidates_returns_404():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = []
+        r = client.post("/query", json={"query": "nonsense xyzzy 99999", "top_k": 3})
+    assert r.status_code == 404
+
+
+def test_query_response_has_all_top_level_fields():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query", json={"query": "supervised learning", "top_k": 1})
+    assert r.status_code == 200
+    data = r.json()
+    for field in ("query", "answer", "chunks", "reranked", "citations", "eval"):
+        assert field in data, f"missing top-level field: {field}"
+
+
+def test_query_eval_field_includes_faithfulness():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query", json={"query": "supervised learning", "top_k": 1})
+    assert "faithfulness" in r.json()["eval"]
+
+
+def test_query_eval_faithfulness_is_bounded():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query", json={"query": "supervised learning", "top_k": 1})
+    score = r.json()["eval"]["faithfulness"]
+    assert score is None or 0.0 <= score <= 1.0
+
+
+def test_query_reranked_false_when_rerank_not_requested():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Some answer."
+        r = client.post("/query", json={"query": "q", "top_k": 1, "rerank": False})
+    assert r.json()["reranked"] is False
+
+
+def test_query_reranked_true_when_rerank_requested():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen, \
+         patch("app.main.rerank") as mock_rerank:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_rerank.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Some answer."
+        r = client.post("/query", json={"query": "q", "top_k": 1, "rerank": True})
+    assert r.json()["reranked"] is True
+
+
+def test_query_calls_reranker_when_rerank_true():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen, \
+         patch("app.main.rerank") as mock_rerank:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_rerank.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Some answer."
+        client.post("/query", json={"query": "q", "top_k": 1, "rerank": True})
+    mock_rerank.assert_called_once()
+
+
+def test_query_skips_reranker_when_rerank_false():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen, \
+         patch("app.main.rerank") as mock_rerank:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Some answer."
+        client.post("/query", json={"query": "q", "top_k": 1, "rerank": False})
+    mock_rerank.assert_not_called()
+
+
+def test_query_citations_field_is_list():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query", json={"query": "supervised learning", "top_k": 1})
+    assert isinstance(r.json()["citations"], list)
+
+
+def test_query_response_query_echoes_request():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Some answer."
+        r = client.post("/query", json={"query": "What is supervised learning?", "top_k": 1})
+    assert r.json()["query"] == "What is supervised learning?"
+
+
+def test_query_response_answer_matches_generator_output():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "The specific answer text here."
+        r = client.post("/query", json={"query": "q", "top_k": 1})
+    assert r.json()["answer"] == "The specific answer text here."
+
+
+def test_query_chunks_field_is_list():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Some answer."
+        r = client.post("/query", json={"query": "q", "top_k": 1})
+    assert isinstance(r.json()["chunks"], list)
+
+
+# ── /index/stats unit tests ───────────────────────────────────
+
+def test_index_stats_returns_200():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 7
+        r = client.get("/index/stats")
+    assert r.status_code == 200
+
+
+def test_index_stats_has_all_required_fields():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 7
+        r = client.get("/index/stats")
+    data = r.json()
+    for field in ("total_chunks", "embed_model", "gen_model", "reranker_model", "hybrid_alpha"):
+        assert field in data, f"missing field: {field}"
+
+
+def test_index_stats_total_chunks_from_vector_store():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 42
+        r = client.get("/index/stats")
+    assert r.json()["total_chunks"] == 42
+
+
+def test_index_stats_hybrid_alpha_is_float():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 5
+        r = client.get("/index/stats")
+    assert isinstance(r.json()["hybrid_alpha"], float)
+
+
+def test_index_stats_hybrid_alpha_in_valid_range():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 5
+        r = client.get("/index/stats")
+    alpha = r.json()["hybrid_alpha"]
+    assert 0.0 <= alpha <= 1.0
