@@ -23,5 +23,6 @@ class QueryLog(Base):
     hit_rate      = Column(Float, nullable=True)
     mrr           = Column(Float, nullable=True)
     ndcg          = Column(Float, nullable=True)
-    faithfulness  = Column(Float, nullable=True)
-    created_at    = Column(DateTime, default=datetime.utcnow, index=True)
+    faithfulness      = Column(Float, nullable=True)
+    answer_relevance  = Column(Float, nullable=True)
+    created_at        = Column(DateTime, default=datetime.utcnow, index=True)

@@ -15,6 +15,10 @@ def chunk_document(
     chunk_size: int = 512,
     overlap: int = 64,
 ) -> list[Chunk]:
+    if overlap >= chunk_size:
+        raise ValueError(
+            f"overlap ({overlap}) must be less than chunk_size ({chunk_size})"
+        )
     chunks = []
     start = 0
     idx = 0

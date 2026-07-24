@@ -1,10 +1,11 @@
 from __future__ import annotations
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Any, AsyncIterator
+import json
 import os
 from dotenv import load_dotenv
 
@@ -18,11 +19,14 @@ from app.reranker import rerank, RERANKER_TOP_K
 from app.citations import extract_citations
 
 load_dotenv()
-Base.metadata.create_all(bind=engine)
-
-with engine.connect() as _conn:
-    _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS ndcg FLOAT"))
-    _conn.commit()
+try:
+    Base.metadata.create_all(bind=engine)
+    with engine.connect() as _conn:
+        _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS ndcg FLOAT"))
+        _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS answer_relevance FLOAT"))
+        _conn.commit()
+except Exception:
+    pass
 
 
 @asynccontextmanager
@@ -60,11 +64,13 @@ def query(req: QueryReq, db: Session = Depends(get_db)):
 
     answer = generator.answer(req.query, chunks)
 
+    ar = answer_relevance(req.query, answer)
     log = QueryLog(
         query=req.query,
         answer=answer,
         retrieved_ids=[c["chunk_id"] for c in chunks],
         faithfulness=faithfulness(answer, chunks),
+        answer_relevance=ar,
     )
     db.add(log)
     db.commit()
@@ -77,13 +83,13 @@ def query(req: QueryReq, db: Session = Depends(get_db)):
         "citations": extract_citations(answer, chunks),
         "eval": {
             "faithfulness":     log.faithfulness,
-            "answer_relevance": answer_relevance(req.query, answer),
+            "answer_relevance": ar,
         },
     }
 
 @app.post("/query/stream", tags=["rag"])
 async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
-    """Stream answer tokens as SSE events. Does not log to DB."""
+    """Stream answer tokens as SSE events, then log faithfulness to DB."""
     if vector_store.count() == 0:
         raise HTTPException(400, "No documents indexed -- run: make ingest")
 
@@ -94,8 +100,24 @@ async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
     chunks = rerank(req.query, candidates, req.top_k) if req.rerank else candidates[:req.top_k]
 
     async def event_generator() -> AsyncIterator[str]:
+        token_parts: list[str] = []
         async for payload in generator.answer_stream(req.query, chunks):
             yield f"data: {payload}\n\n"
+            if payload != "[DONE]":
+                try:
+                    token_parts.append(json.loads(payload)["token"])
+                except (json.JSONDecodeError, KeyError):
+                    pass
+        full_answer = "".join(token_parts)
+        log = QueryLog(
+            query=req.query,
+            answer=full_answer or "(empty stream)",
+            retrieved_ids=[c["chunk_id"] for c in chunks],
+            faithfulness=faithfulness(full_answer, chunks) if full_answer else None,
+            answer_relevance=answer_relevance(req.query, full_answer) if full_answer else None,
+        )
+        db.add(log)
+        db.commit()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -125,6 +147,7 @@ def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
         mrr=mrr,
         ndcg=ndcg,
         faithfulness=f,
+        answer_relevance=ar,
     )
     db.add(log)
     db.commit()
@@ -160,7 +183,11 @@ def eval_summary(db: Session = Depends(get_db)):
         "avg_hit_rate":         avg([l.hit_rate for l in logs]),
         "avg_mrr":              avg([l.mrr for l in logs]),
         "avg_ndcg":             avg([l.ndcg for l in logs]),
-        "avg_answer_relevance": avg([answer_relevance(l.query, l.answer) for l in logs]),
+        "avg_answer_relevance": avg([
+            l.answer_relevance if l.answer_relevance is not None
+            else answer_relevance(l.query, l.answer)
+            for l in logs
+        ]),
     }
 
 @app.get("/eval/history", tags=["monitoring"])
@@ -173,13 +200,14 @@ def eval_history(limit: int = 20, db: Session = Depends(get_db)):
     )
     return [
         {
-            "query":        l.query,
-            "answer":       l.answer[:200] + "..." if len(l.answer) > 200 else l.answer,
-            "faithfulness": l.faithfulness,
-            "hit_rate":     l.hit_rate,
-            "mrr":          l.mrr,
-            "ndcg":         l.ndcg,
-            "created_at":   str(l.created_at),
+            "query":            l.query,
+            "answer":           l.answer[:200] + "..." if len(l.answer) > 200 else l.answer,
+            "faithfulness":     l.faithfulness,
+            "answer_relevance": l.answer_relevance,
+            "hit_rate":         l.hit_rate,
+            "mrr":              l.mrr,
+            "ndcg":             l.ndcg,
+            "created_at":       str(l.created_at),
         }
         for l in logs
     ]
@@ -196,9 +224,22 @@ def index_stats():
     }
 
 @app.get("/health")
-def health():
-    return {
-        "status":        "ok",
-        "chunks_indexed": vector_store.count(),
-        "model_loaded":  generator.model is not None,
-    }
+def health(db: Session = Depends(get_db)):
+    db_ok = False
+    try:
+        db.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:
+        pass
+
+    status = "ok" if db_ok else "degraded"
+    code = 200 if db_ok else 503
+    return JSONResponse(
+        status_code=code,
+        content={
+            "status":         status,
+            "chunks_indexed": vector_store.count(),
+            "model_loaded":   generator.model is not None,
+            "db":             "ok" if db_ok else "unreachable",
+        },
+    )
