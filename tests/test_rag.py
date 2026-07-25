@@ -1095,7 +1095,7 @@ def test_dense_query_empty_collection_returns_empty_dict():
 def test_dense_query_calls_embedder_with_query_text():
     vs = _make_vs_with_mock_collection()
     vs.collection.query.return_value = {"ids": [[]], "distances": [[]]}
-    vs.collection.count.return_value = 0
+    vs.collection.count.return_value = 3
     vs._dense_query("machine learning", top_k=3)
     call_args = vs.embedder.encode.call_args
     assert "machine learning" in call_args[0][0]
@@ -2527,3 +2527,58 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── VectorStore._dense_query() empty-collection guard tests ──
+
+def test_dense_query_empty_collection_does_not_call_collection_query():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 0
+    vs.embedder = MagicMock()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2]])
+    vs._dense_query("anything", top_k=5)
+    vs.collection.query.assert_not_called()
+
+
+def test_dense_query_empty_collection_returns_empty_without_encoding():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 0
+    vs.embedder = MagicMock()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2]])
+    result = vs._dense_query("anything", top_k=5)
+    vs.embedder.encode.assert_not_called()
+    assert result == {}
+
+
+# ── /query/eval empty-index guard tests ──────────────────────
+
+def test_query_eval_empty_index_returns_400():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 0
+        r = client.post("/query/eval", json={
+            "query": "What is ML?",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 3,
+        })
+    assert r.status_code == 400
+
+
+def test_query_eval_empty_index_error_message():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 0
+        r = client.post("/query/eval", json={
+            "query": "What is ML?",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 3,
+        })
+    assert "ingest" in r.json()["detail"].lower()
