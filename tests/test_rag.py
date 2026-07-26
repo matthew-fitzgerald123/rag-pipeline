@@ -1026,6 +1026,152 @@ def test_bm25_query_non_matching_query_returns_empty():
     assert vs._bm25_query("zzz_nonexistent_term", top_k=5) == {}
 
 
+def test_bm25_query_caps_at_twice_top_k():
+    from app.vector_store import VectorStore
+    from rank_bm25 import BM25Okapi
+    vs = VectorStore.__new__(VectorStore)
+    # "target" appears in 4 of 12 docs → positive IDF, all 4 score > 0.
+    corpus = (
+        [["target", f"uniq{i}"] for i in range(4)]
+        + [["other"] for _ in range(8)]
+    )
+    vs._bm25 = BM25Okapi(corpus)
+    vs._bm25_ids = [f"c{i}" for i in range(12)]
+    result = vs._bm25_query("target", top_k=1)
+    assert len(result) <= 2
+
+
+def test_bm25_query_returns_all_when_fewer_than_cap():
+    from app.vector_store import VectorStore
+    from rank_bm25 import BM25Okapi
+    vs = VectorStore.__new__(VectorStore)
+    # "target" in 2 of 10 docs; top_k=5 → cap 10 → all 2 returned.
+    corpus = [["target", "alpha"], ["target", "beta"]] + [["other"] for _ in range(8)]
+    vs._bm25 = BM25Okapi(corpus)
+    vs._bm25_ids = [f"c{i}" for i in range(10)]
+    result = vs._bm25_query("target", top_k=5)
+    assert len(result) == 2
+
+
+def test_bm25_query_cap_selects_highest_scoring_docs():
+    from app.vector_store import VectorStore
+    from rank_bm25 import BM25Okapi
+    vs = VectorStore.__new__(VectorStore)
+    # "neural" appears in 4 of 12 docs; "best" also has "network" and "deep".
+    # Querying all three terms makes "best" score highest.
+    corpus = (
+        [["neural", "network", "deep"]]   # best: c0
+        + [["neural"] for _ in range(3)]  # c1-c3: weaker
+        + [["other"] for _ in range(8)]   # non-matching
+    )
+    vs._bm25 = BM25Okapi(corpus)
+    vs._bm25_ids = ["best"] + [f"c{i}" for i in range(11)]
+    result = vs._bm25_query("neural network deep", top_k=1)
+    assert len(result) <= 2
+    assert "best" in result
+
+
+# ── VectorStore._dense_query() unit tests ────────────────
+
+def _make_vs_with_mock_collection():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.embedder = MagicMock()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2, 0.3]])
+    return vs
+
+
+def test_dense_query_returns_id_to_score_dict():
+    vs = _make_vs_with_mock_collection()
+    vs.collection.query.return_value = {
+        "ids": [["c1"]],
+        "distances": [[0.2]],
+    }
+    vs.collection.count.return_value = 1
+    result = vs._dense_query("what is ml?", top_k=1)
+    assert isinstance(result, dict)
+    assert "c1" in result
+
+
+def test_dense_query_score_is_one_minus_distance():
+    vs = _make_vs_with_mock_collection()
+    vs.collection.query.return_value = {
+        "ids": [["c1"]],
+        "distances": [[0.3]],
+    }
+    vs.collection.count.return_value = 1
+    result = vs._dense_query("query", top_k=1)
+    assert result["c1"] == round(1 - 0.3, 4)
+
+
+def test_dense_query_score_rounded_to_four_decimals():
+    vs = _make_vs_with_mock_collection()
+    vs.collection.query.return_value = {
+        "ids": [["c1"]],
+        "distances": [[0.123456789]],
+    }
+    vs.collection.count.return_value = 1
+    result = vs._dense_query("query", top_k=1)
+    assert result["c1"] == round(1 - 0.123456789, 4)
+
+
+def test_dense_query_returns_all_result_ids():
+    vs = _make_vs_with_mock_collection()
+    vs.collection.query.return_value = {
+        "ids": [["c1", "c2", "c3"]],
+        "distances": [[0.1, 0.2, 0.3]],
+    }
+    vs.collection.count.return_value = 3
+    result = vs._dense_query("query", top_k=3)
+    assert set(result.keys()) == {"c1", "c2", "c3"}
+
+
+def test_dense_query_empty_collection_returns_empty_dict():
+    vs = _make_vs_with_mock_collection()
+    vs.collection.count.return_value = 0
+    vs.collection.query.return_value = {"ids": [[]], "distances": [[]]}
+    result = vs._dense_query("query", top_k=5)
+    assert result == {}
+
+
+def test_dense_query_calls_embedder_with_query_text():
+    vs = _make_vs_with_mock_collection()
+    vs.collection.query.return_value = {"ids": [[]], "distances": [[]]}
+    vs.collection.count.return_value = 3
+    vs._dense_query("machine learning", top_k=3)
+    call_args = vs.embedder.encode.call_args
+    assert "machine learning" in call_args[0][0]
+
+
+def test_dense_query_n_results_capped_by_collection_count():
+    vs = _make_vs_with_mock_collection()
+    vs.collection.count.return_value = 2
+    vs.collection.query.return_value = {
+        "ids": [["c1", "c2"]],
+        "distances": [[0.1, 0.2]],
+    }
+    vs._dense_query("query", top_k=10)
+    called_n = vs.collection.query.call_args[1].get(
+        "n_results", vs.collection.query.call_args[0][1]
+        if len(vs.collection.query.call_args[0]) > 1 else None
+    ) or vs.collection.query.call_args[1]["n_results"]
+    assert called_n <= 2
+
+
+def test_dense_query_higher_distance_gives_lower_score():
+    vs = _make_vs_with_mock_collection()
+    vs.collection.query.return_value = {
+        "ids": [["c1", "c2"]],
+        "distances": [[0.1, 0.4]],
+    }
+    vs.collection.count.return_value = 2
+    result = vs._dense_query("query", top_k=2)
+    assert result["c1"] > result["c2"]
+
+
 # ── VectorStore hybrid fusion unit tests ─────────────────
 
 def test_query_fuses_dense_score_with_alpha():
@@ -2426,3 +2572,58 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── VectorStore._dense_query() empty-collection guard tests ──
+
+def test_dense_query_empty_collection_does_not_call_collection_query():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 0
+    vs.embedder = MagicMock()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2]])
+    vs._dense_query("anything", top_k=5)
+    vs.collection.query.assert_not_called()
+
+
+def test_dense_query_empty_collection_returns_empty_without_encoding():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 0
+    vs.embedder = MagicMock()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2]])
+    result = vs._dense_query("anything", top_k=5)
+    vs.embedder.encode.assert_not_called()
+    assert result == {}
+
+
+# ── /query/eval empty-index guard tests ──────────────────────
+
+def test_query_eval_empty_index_returns_400():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 0
+        r = client.post("/query/eval", json={
+            "query": "What is ML?",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 3,
+        })
+    assert r.status_code == 400
+
+
+def test_query_eval_empty_index_error_message():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 0
+        r = client.post("/query/eval", json={
+            "query": "What is ML?",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 3,
+        })
+    assert "ingest" in r.json()["detail"].lower()
