@@ -1026,6 +1026,51 @@ def test_bm25_query_non_matching_query_returns_empty():
     assert vs._bm25_query("zzz_nonexistent_term", top_k=5) == {}
 
 
+def test_bm25_query_caps_at_twice_top_k():
+    from app.vector_store import VectorStore
+    from rank_bm25 import BM25Okapi
+    vs = VectorStore.__new__(VectorStore)
+    # "target" appears in 4 of 12 docs → positive IDF, all 4 score > 0.
+    corpus = (
+        [["target", f"uniq{i}"] for i in range(4)]
+        + [["other"] for _ in range(8)]
+    )
+    vs._bm25 = BM25Okapi(corpus)
+    vs._bm25_ids = [f"c{i}" for i in range(12)]
+    result = vs._bm25_query("target", top_k=1)
+    assert len(result) <= 2
+
+
+def test_bm25_query_returns_all_when_fewer_than_cap():
+    from app.vector_store import VectorStore
+    from rank_bm25 import BM25Okapi
+    vs = VectorStore.__new__(VectorStore)
+    # "target" in 2 of 10 docs; top_k=5 → cap 10 → all 2 returned.
+    corpus = [["target", "alpha"], ["target", "beta"]] + [["other"] for _ in range(8)]
+    vs._bm25 = BM25Okapi(corpus)
+    vs._bm25_ids = [f"c{i}" for i in range(10)]
+    result = vs._bm25_query("target", top_k=5)
+    assert len(result) == 2
+
+
+def test_bm25_query_cap_selects_highest_scoring_docs():
+    from app.vector_store import VectorStore
+    from rank_bm25 import BM25Okapi
+    vs = VectorStore.__new__(VectorStore)
+    # "neural" appears in 4 of 12 docs; "best" also has "network" and "deep".
+    # Querying all three terms makes "best" score highest.
+    corpus = (
+        [["neural", "network", "deep"]]   # best: c0
+        + [["neural"] for _ in range(3)]  # c1-c3: weaker
+        + [["other"] for _ in range(8)]   # non-matching
+    )
+    vs._bm25 = BM25Okapi(corpus)
+    vs._bm25_ids = ["best"] + [f"c{i}" for i in range(11)]
+    result = vs._bm25_query("neural network deep", top_k=1)
+    assert len(result) <= 2
+    assert "best" in result
+
+
 # ── VectorStore._dense_query() unit tests ────────────────
 
 def _make_vs_with_mock_collection():
