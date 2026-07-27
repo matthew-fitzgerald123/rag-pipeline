@@ -65,6 +65,8 @@ class VectorStore:
         self._rebuild_bm25()
 
     def _dense_query(self, query_text: str, top_k: int) -> dict[str, float]:
+        if self.collection.count() == 0:
+            return {}
         embedding = self.embedder.encode(
             [query_text], normalize_embeddings=True
         ).tolist()
@@ -84,11 +86,13 @@ class VectorStore:
         tokens = _tokenize(query_text)
         raw_scores = self._bm25.get_scores(tokens)
         max_score = max(raw_scores) if max(raw_scores) > 0 else 1.0
-        return {
-            cid: round(float(raw_scores[i]) / max_score, 4)
+        scored = [
+            (cid, round(float(raw_scores[i]) / max_score, 4))
             for i, cid in enumerate(self._bm25_ids)
             if raw_scores[i] > 0
-        }
+        ]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return dict(scored[: top_k * 2])
 
     def query(self, query_text: str, top_k: int = 5) -> list[dict]:
         dense_scores = self._dense_query(query_text, top_k)
