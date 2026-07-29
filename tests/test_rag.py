@@ -317,3 +317,202 @@ def test_ingest_file_calls_add_chunks_with_chunk_document_result():
          patch("scripts.ingest.vector_store") as mock_vs:
         ingest_file(path, db)
     mock_vs.add_chunks.assert_called_once_with(fake_chunks)
+
+
+# ── hit_rate() unit tests ─────────────────────────────────────
+
+
+def test_hit_rate_all_relevant_retrieved():
+    from app.evaluator import hit_rate
+    assert hit_rate(["a", "b", "c"], ["a", "b"]) == 1.0
+
+
+def test_hit_rate_partial_overlap():
+    from app.evaluator import hit_rate
+    assert hit_rate(["a", "x", "y"], ["a", "b"]) == 0.5
+
+
+def test_hit_rate_no_overlap():
+    from app.evaluator import hit_rate
+    assert hit_rate(["x", "y", "z"], ["a", "b"]) == 0.0
+
+
+def test_hit_rate_empty_relevant_is_zero():
+    from app.evaluator import hit_rate
+    assert hit_rate(["a", "b"], []) == 0.0
+
+
+def test_hit_rate_empty_retrieved_is_zero():
+    from app.evaluator import hit_rate
+    assert hit_rate([], ["a"]) == 0.0
+
+
+# ── mean_reciprocal_rank() unit tests ────────────────────────
+
+
+def test_mrr_first_result_relevant():
+    from app.evaluator import mean_reciprocal_rank
+    assert mean_reciprocal_rank(["a", "b", "c"], ["a"]) == 1.0
+
+
+def test_mrr_second_result_relevant():
+    from app.evaluator import mean_reciprocal_rank
+    result = mean_reciprocal_rank(["x", "a", "c"], ["a"])
+    assert abs(result - 0.5) < 0.001
+
+
+def test_mrr_no_relevant_retrieved():
+    from app.evaluator import mean_reciprocal_rank
+    assert mean_reciprocal_rank(["x", "y", "z"], ["a"]) == 0.0
+
+
+def test_mrr_empty_relevant_is_zero():
+    from app.evaluator import mean_reciprocal_rank
+    assert mean_reciprocal_rank(["a", "b"], []) == 0.0
+
+
+def test_mrr_rewards_earlier_rank():
+    from app.evaluator import mean_reciprocal_rank
+    early = mean_reciprocal_rank(["a", "x", "y"], ["a"])
+    late = mean_reciprocal_rank(["x", "y", "a"], ["a"])
+    assert early > late
+
+
+# ── faithfulness() unit tests ────────────────────────────────
+
+
+def test_faithfulness_empty_answer_is_zero():
+    from app.evaluator import faithfulness
+    assert faithfulness("", [{"text": "Some context."}]) == 0.0
+
+
+def test_faithfulness_grounded_answer():
+    from app.evaluator import faithfulness
+    chunks = [{"text": "Supervised learning trains models on labeled data."}]
+    answer = "Supervised learning uses labeled training data."
+    score = faithfulness(answer, chunks)
+    assert score > 0.0
+
+
+def test_faithfulness_ungrounded_answer():
+    from app.evaluator import faithfulness
+    chunks = [{"text": "Cats are mammals that purr."}]
+    answer = "Quantum mechanics describes subatomic particles."
+    score = faithfulness(answer, chunks)
+    assert score == 0.0
+
+
+def test_faithfulness_multiple_sentences_partial():
+    from app.evaluator import faithfulness
+    chunks = [{"text": "Neural networks learn from data."}]
+    answer = "Neural networks learn from data. Cats are mammals."
+    score = faithfulness(answer, chunks)
+    assert 0.0 < score < 1.0
+
+
+def test_faithfulness_returns_float_in_range():
+    from app.evaluator import faithfulness
+    chunks = [{"text": "Some context text here."}]
+    score = faithfulness("Some answer text.", chunks)
+    assert 0.0 <= score <= 1.0
+
+
+# ── answer_relevance() unit tests ────────────────────────────
+
+
+def test_answer_relevance_full_overlap():
+    from app.evaluator import answer_relevance
+    assert answer_relevance("supervised learning", "supervised learning trains models") == 1.0
+
+
+def test_answer_relevance_no_overlap():
+    from app.evaluator import answer_relevance
+    assert answer_relevance("supervised learning", "cats purr loudly") == 0.0
+
+
+def test_answer_relevance_partial_overlap():
+    from app.evaluator import answer_relevance
+    score = answer_relevance("supervised learning models", "supervised training data")
+    assert 0.0 < score < 1.0
+
+
+def test_answer_relevance_stopwords_only_query_is_zero():
+    from app.evaluator import answer_relevance
+    assert answer_relevance("the a an", "anything goes here") == 0.0
+
+
+def test_answer_relevance_returns_float_in_range():
+    from app.evaluator import answer_relevance
+    score = answer_relevance("what is overfitting", "overfitting occurs when a model memorizes training data")
+    assert 0.0 <= score <= 1.0
+
+
+# ── chunk_document() unit tests ──────────────────────────────
+
+
+def test_chunk_document_empty_text_returns_no_chunks():
+    from app.chunker import chunk_document
+    assert chunk_document(doc_id="d1", text="", metadata={}) == []
+
+
+def test_chunk_document_whitespace_text_returns_no_chunks():
+    from app.chunker import chunk_document
+    assert chunk_document(doc_id="d1", text="   \n  ", metadata={}) == []
+
+
+def test_chunk_document_short_text_is_single_chunk():
+    from app.chunker import chunk_document
+    chunks = chunk_document(doc_id="d1", text="Hello world.", metadata={})
+    assert len(chunks) == 1
+    assert chunks[0].text == "Hello world."
+
+
+def test_chunk_document_chunk_ids_use_doc_id():
+    from app.chunker import chunk_document
+    chunks = chunk_document(doc_id="doc99", text="Hello world.", metadata={})
+    assert chunks[0].chunk_id.startswith("doc99")
+
+
+def test_chunk_document_chunk_ids_are_sequential():
+    from app.chunker import chunk_document
+    text = "a" * 600
+    chunks = chunk_document(doc_id="d1", text=text, metadata={}, chunk_size=256, overlap=0)
+    ids = [c.chunk_id for c in chunks]
+    assert ids[0].endswith("_0")
+    assert ids[1].endswith("_1")
+
+
+def test_chunk_document_respects_chunk_size():
+    from app.chunker import chunk_document
+    text = "x" * 1000
+    chunks = chunk_document(doc_id="d1", text=text, metadata={}, chunk_size=200, overlap=0)
+    for c in chunks[:-1]:
+        assert len(c.text) <= 200
+
+
+def test_chunk_document_overlap_produces_repeated_content():
+    from app.chunker import chunk_document
+    text = "a" * 100
+    chunks = chunk_document(doc_id="d1", text=text, metadata={}, chunk_size=60, overlap=20)
+    assert len(chunks) >= 2
+    assert chunks[0].text[-20:] == chunks[1].text[:20]
+
+
+def test_chunk_document_metadata_propagated():
+    from app.chunker import chunk_document
+    meta = {"title": "ml_basics"}
+    chunks = chunk_document(doc_id="d1", text="Hello world.", metadata=meta)
+    assert chunks[0].metadata["title"] == "ml_basics"
+
+
+def test_chunk_document_doc_id_in_chunk():
+    from app.chunker import chunk_document
+    chunks = chunk_document(doc_id="abc123", text="Hello world.", metadata={})
+    assert chunks[0].doc_id == "abc123"
+
+
+def test_chunk_document_long_text_produces_multiple_chunks():
+    from app.chunker import chunk_document
+    text = "word " * 300
+    chunks = chunk_document(doc_id="d1", text=text, metadata={}, chunk_size=100, overlap=10)
+    assert len(chunks) > 1
