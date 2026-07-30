@@ -516,3 +516,178 @@ def test_chunk_document_long_text_produces_multiple_chunks():
     text = "word " * 300
     chunks = chunk_document(doc_id="d1", text=text, metadata={}, chunk_size=100, overlap=10)
     assert len(chunks) > 1
+
+
+# ── rerank() unit tests ───────────────────────────────────────
+
+
+def _make_candidates(*texts):
+    return [{"chunk_id": f"c{i}", "text": t, "score": 0.5} for i, t in enumerate(texts)]
+
+
+def test_rerank_empty_candidates_returns_empty():
+    from app.reranker import rerank
+    from unittest.mock import patch
+    with patch("app.reranker._get_model"):
+        assert rerank("query", [], top_k=3) == []
+
+
+def test_rerank_annotates_candidates_with_rerank_score():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    model = MagicMock()
+    model.predict.return_value = [0.9, 0.4]
+    with patch("app.reranker._get_model", return_value=model):
+        results = rerank("q", _make_candidates("text A", "text B"), top_k=2)
+    assert all("rerank_score" in r for r in results)
+    assert all(isinstance(r["rerank_score"], float) for r in results)
+
+
+def test_rerank_returns_sorted_by_score_descending():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    model = MagicMock()
+    model.predict.return_value = [0.2, 0.9, 0.5]
+    with patch("app.reranker._get_model", return_value=model):
+        results = rerank("q", _make_candidates("low", "high", "mid"), top_k=3)
+    scores = [r["rerank_score"] for r in results]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_rerank_respects_top_k_limit():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    model = MagicMock()
+    model.predict.return_value = [0.9, 0.8, 0.7, 0.6]
+    with patch("app.reranker._get_model", return_value=model):
+        results = rerank("q", _make_candidates("a", "b", "c", "d"), top_k=2)
+    assert len(results) == 2
+
+
+def test_rerank_top_k_larger_than_candidates_returns_all():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    model = MagicMock()
+    model.predict.return_value = [0.8, 0.3]
+    with patch("app.reranker._get_model", return_value=model):
+        results = rerank("q", _make_candidates("a", "b"), top_k=10)
+    assert len(results) == 2
+
+
+def test_rerank_calls_model_with_correct_pairs():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    model = MagicMock()
+    model.predict.return_value = [0.5, 0.6]
+    candidates = _make_candidates("chunk text one", "chunk text two")
+    with patch("app.reranker._get_model", return_value=model):
+        rerank("my query", candidates, top_k=2)
+    model.predict.assert_called_once_with([("my query", "chunk text one"), ("my query", "chunk text two")])
+
+
+def test_rerank_score_is_rounded_to_4_decimal_places():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    model = MagicMock()
+    model.predict.return_value = [0.123456789]
+    with patch("app.reranker._get_model", return_value=model):
+        results = rerank("q", _make_candidates("text"), top_k=1)
+    score = results[0]["rerank_score"]
+    assert score == round(score, 4)
+
+
+def test_rerank_preserves_other_candidate_fields():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    model = MagicMock()
+    model.predict.return_value = [0.7]
+    candidate = {"chunk_id": "abc", "text": "hello", "score": 0.99, "metadata": {"title": "doc"}}
+    with patch("app.reranker._get_model", return_value=model):
+        results = rerank("q", [candidate], top_k=1)
+    assert results[0]["chunk_id"] == "abc"
+    assert results[0]["text"] == "hello"
+    assert results[0]["score"] == 0.99
+    assert results[0]["metadata"] == {"title": "doc"}
+
+
+def test_rerank_highest_scoring_is_first():
+    from app.reranker import rerank
+    from unittest.mock import patch, MagicMock
+    model = MagicMock()
+    model.predict.return_value = [0.1, 0.95, 0.3]
+    candidates = _make_candidates("low", "best", "mid")
+    with patch("app.reranker._get_model", return_value=model):
+        results = rerank("q", candidates, top_k=3)
+    assert results[0]["chunk_id"] == "c1"
+
+
+# ── extract_citations() additional unit tests ─────────────────
+
+
+def test_extract_citations_empty_answer_returns_empty():
+    from app.citations import extract_citations
+    assert extract_citations("", [{"chunk_id": "c1", "text": "some text", "metadata": {}}]) == []
+
+
+def test_extract_citations_no_chunks_returns_sentences_with_no_citations():
+    from app.citations import extract_citations
+    result = extract_citations("Supervised learning uses labeled data.", [], threshold=0.0)
+    assert len(result) == 1
+    assert result[0]["citations"] == []
+
+
+def test_extract_citations_below_threshold_not_cited():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "cats purr loudly at night", "metadata": {}}]
+    result = extract_citations("Supervised learning uses labeled data.", chunks, threshold=0.5)
+    assert result[0]["citations"] == []
+
+
+def test_extract_citations_multiple_chunks_all_above_threshold_cited():
+    from app.citations import extract_citations
+    chunks = [
+        {"chunk_id": "c1", "text": "Supervised learning trains on labeled data.", "metadata": {}},
+        {"chunk_id": "c2", "text": "Supervised models learn from labeled examples.", "metadata": {}},
+    ]
+    result = extract_citations("Supervised learning uses labeled data.", chunks, threshold=0.2)
+    assert len(result[0]["citations"]) == 2
+
+
+def test_extract_citations_citations_sorted_by_overlap_descending():
+    from app.citations import extract_citations
+    chunks = [
+        {"chunk_id": "weak", "text": "learning supervised", "metadata": {}},
+        {"chunk_id": "strong", "text": "supervised learning trains labeled data models", "metadata": {}},
+    ]
+    result = extract_citations("Supervised learning trains on labeled data.", chunks, threshold=0.1)
+    overlaps = [c["overlap"] for c in result[0]["citations"]]
+    assert overlaps == sorted(overlaps, reverse=True)
+
+
+def test_extract_citations_multiple_sentences_each_attributed_independently():
+    from app.citations import extract_citations
+    chunks = [
+        {"chunk_id": "c1", "text": "supervised learning labeled data training", "metadata": {}},
+        {"chunk_id": "c2", "text": "neural networks universal function approximators", "metadata": {}},
+    ]
+    answer = "Supervised learning uses labeled training data. Neural networks are universal function approximators."
+    result = extract_citations(answer, chunks, threshold=0.2)
+    assert len(result) == 2
+    ids_first = {c["chunk_id"] for c in result[0]["citations"]}
+    ids_second = {c["chunk_id"] for c in result[1]["citations"]}
+    assert "c1" in ids_first
+    assert "c2" in ids_second
+
+
+def test_extract_citations_title_from_metadata():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "supervised learning labeled data.", "metadata": {"title": "ML Guide"}}]
+    result = extract_citations("Supervised learning uses labeled data.", chunks, threshold=0.2)
+    assert result[0]["citations"][0]["title"] == "ML Guide"
+
+
+def test_extract_citations_missing_title_defaults_to_empty_string():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "supervised learning labeled data.", "metadata": {}}]
+    result = extract_citations("Supervised learning uses labeled data.", chunks, threshold=0.2)
+    assert result[0]["citations"][0]["title"] == ""
