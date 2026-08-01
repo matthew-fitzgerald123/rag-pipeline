@@ -2426,3 +2426,160 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── reranker._get_model() singleton unit tests ────────────────
+
+def test_get_model_loads_cross_encoder_on_first_call():
+    from unittest.mock import patch, MagicMock
+    import app.reranker as rr
+    original = rr._model
+    rr._model = None
+    try:
+        fake_model = MagicMock()
+        with patch("app.reranker.CrossEncoder", return_value=fake_model) as mock_ce:
+            result = rr._get_model()
+        mock_ce.assert_called_once_with(rr.RERANKER_MODEL)
+        assert result is fake_model
+    finally:
+        rr._model = original
+
+
+def test_get_model_caches_instance_on_second_call():
+    from unittest.mock import patch, MagicMock
+    import app.reranker as rr
+    original = rr._model
+    rr._model = None
+    try:
+        fake_model = MagicMock()
+        with patch("app.reranker.CrossEncoder", return_value=fake_model) as mock_ce:
+            first = rr._get_model()
+            second = rr._get_model()
+        assert mock_ce.call_count == 1
+        assert first is second
+    finally:
+        rr._model = original
+
+
+def test_get_model_does_not_reload_when_already_cached():
+    from unittest.mock import patch, MagicMock
+    import app.reranker as rr
+    original = rr._model
+    existing_model = MagicMock()
+    rr._model = existing_model
+    try:
+        with patch("app.reranker.CrossEncoder") as mock_ce:
+            result = rr._get_model()
+        mock_ce.assert_not_called()
+        assert result is existing_model
+    finally:
+        rr._model = original
+
+
+def test_get_model_uses_reranker_model_constant():
+    from unittest.mock import patch, MagicMock
+    import app.reranker as rr
+    original = rr._model
+    rr._model = None
+    try:
+        with patch("app.reranker.CrossEncoder", return_value=MagicMock()) as mock_ce:
+            rr._get_model()
+        assert mock_ce.call_args[0][0] == rr.RERANKER_MODEL
+    finally:
+        rr._model = original
+
+
+def test_get_model_returns_cross_encoder_instance():
+    from unittest.mock import patch, MagicMock
+    import app.reranker as rr
+    original = rr._model
+    rr._model = None
+    try:
+        fake_model = MagicMock()
+        with patch("app.reranker.CrossEncoder", return_value=fake_model):
+            result = rr._get_model()
+        assert result is fake_model
+    finally:
+        rr._model = original
+
+
+def test_get_model_sets_module_level_cache():
+    from unittest.mock import patch, MagicMock
+    import app.reranker as rr
+    original = rr._model
+    rr._model = None
+    try:
+        fake_model = MagicMock()
+        with patch("app.reranker.CrossEncoder", return_value=fake_model):
+            rr._get_model()
+        assert rr._model is fake_model
+    finally:
+        rr._model = original
+
+
+# ── Generator.load_model() unit tests ────────────────────────
+
+def test_load_model_sets_model_attribute():
+    from unittest.mock import patch, MagicMock
+    from app.generator import Generator
+    gen = Generator()
+    fake_model = MagicMock()
+    fake_tokenizer = MagicMock()
+    with patch("app.generator.load", return_value=(fake_model, fake_tokenizer)):
+        gen.load_model()
+    assert gen.model is fake_model
+
+
+def test_load_model_sets_tokenizer_attribute():
+    from unittest.mock import patch, MagicMock
+    from app.generator import Generator
+    gen = Generator()
+    fake_model = MagicMock()
+    fake_tokenizer = MagicMock()
+    with patch("app.generator.load", return_value=(fake_model, fake_tokenizer)):
+        gen.load_model()
+    assert gen.tokenizer is fake_tokenizer
+
+
+def test_load_model_calls_load_with_model_id():
+    from unittest.mock import patch, MagicMock
+    from app.generator import Generator
+    gen = Generator()
+    gen._model_id = "mlx-community/test-model"
+    with patch("app.generator.load", return_value=(MagicMock(), MagicMock())) as mock_load:
+        gen.load_model()
+    mock_load.assert_called_once_with("mlx-community/test-model")
+
+
+def test_load_model_uses_default_gen_model_env():
+    from unittest.mock import patch, MagicMock
+    from app.generator import Generator
+    gen = Generator()
+    with patch("app.generator.load", return_value=(MagicMock(), MagicMock())) as mock_load:
+        gen.load_model()
+    mock_load.assert_called_once_with(gen._model_id)
+
+
+def test_load_model_is_idempotent_if_called_twice():
+    from unittest.mock import patch, MagicMock
+    from app.generator import Generator
+    gen = Generator()
+    m1, t1 = MagicMock(), MagicMock()
+    m2, t2 = MagicMock(), MagicMock()
+    with patch("app.generator.load", side_effect=[(m1, t1), (m2, t2)]):
+        gen.load_model()
+        gen.load_model()
+    assert gen.model is m2
+    assert gen.tokenizer is t2
+
+
+def test_load_model_model_starts_as_none():
+    from app.generator import Generator
+    gen = Generator()
+    assert gen.model is None
+
+
+def test_load_model_tokenizer_starts_as_none():
+    from app.generator import Generator
+    gen = Generator()
+    assert gen.tokenizer is None
