@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 
 from sentence_transformers import CrossEncoder
 
@@ -25,14 +26,17 @@ RERANKER_MODEL = os.getenv(
 RERANKER_TOP_K = int(os.getenv("RERANKER_TOP_K", "20"))
 
 _model: CrossEncoder | None = None
+_model_lock = threading.Lock()
 
 
 def _get_model() -> CrossEncoder:
     global _model
     if _model is None:
-        log.info("Loading cross-encoder: %s", RERANKER_MODEL)
-        _model = CrossEncoder(RERANKER_MODEL)
-        log.info("Cross-encoder ready")
+        with _model_lock:
+            if _model is None:
+                log.info("Loading cross-encoder: %s", RERANKER_MODEL)
+                _model = CrossEncoder(RERANKER_MODEL)
+                log.info("Cross-encoder ready")
     return _model
 
 
