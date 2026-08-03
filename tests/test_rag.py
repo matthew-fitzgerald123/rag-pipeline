@@ -391,6 +391,129 @@ def test_answer_passes_model_and_tokenizer_to_generate():
     assert captured["tokenizer"] is gen.tokenizer
 
 
+# ── Generator._stream_into_queue() unit tests ─────────────
+
+def test_stream_into_queue_calls_stream_generate_with_correct_args():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    from queue import Queue
+    from threading import Event
+    gen = Generator()
+    gen.model = MagicMock(name="the_model")
+    gen.tokenizer = MagicMock(name="the_tokenizer")
+    q, done = Queue(), Event()
+    captured = {}
+
+    def fake_sg(model, tokenizer, prompt, max_tokens):
+        captured.update({"model": model, "tokenizer": tokenizer,
+                         "prompt": prompt, "max_tokens": max_tokens})
+        return iter([])
+
+    with patch("app.generator.stream_generate", side_effect=fake_sg):
+        gen._stream_into_queue("test prompt", 256, q, done)
+
+    assert captured["model"] is gen.model
+    assert captured["tokenizer"] is gen.tokenizer
+    assert captured["prompt"] == "test prompt"
+    assert captured["max_tokens"] == 256
+
+
+def test_stream_into_queue_puts_chunk_text_not_object():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    from queue import Queue
+    from threading import Event
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    q, done = Queue(), Event()
+    chunk = MagicMock()
+    chunk.text = "hello token"
+
+    with patch("app.generator.stream_generate", return_value=iter([chunk])):
+        gen._stream_into_queue("prompt", 512, q, done)
+
+    item = q.get_nowait()
+    assert item == "hello token"
+    assert not isinstance(item, MagicMock)
+
+
+def test_stream_into_queue_sets_done_after_normal_completion():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    from queue import Queue
+    from threading import Event
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    q, done = Queue(), Event()
+
+    with patch("app.generator.stream_generate", return_value=iter([])):
+        gen._stream_into_queue("prompt", 512, q, done)
+
+    assert done.is_set()
+
+
+def test_stream_into_queue_sets_done_on_exception():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    from queue import Queue
+    from threading import Event
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    q, done = Queue(), Event()
+
+    def exploding_stream(*args, **kwargs):
+        raise RuntimeError("stream failure")
+
+    with patch("app.generator.stream_generate", side_effect=exploding_stream):
+        try:
+            gen._stream_into_queue("prompt", 512, q, done)
+        except RuntimeError:
+            pass
+
+    assert done.is_set()
+
+
+def test_stream_into_queue_enqueues_tokens_in_order():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    from queue import Queue
+    from threading import Event
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    q, done = Queue(), Event()
+    tokens = ["first", " second", " third"]
+    chunks = [MagicMock(text=t) for t in tokens]
+
+    with patch("app.generator.stream_generate", return_value=iter(chunks)):
+        gen._stream_into_queue("prompt", 512, q, done)
+
+    collected = []
+    while not q.empty():
+        collected.append(q.get_nowait())
+    assert collected == tokens
+
+
+def test_stream_into_queue_empty_stream_sets_done_without_enqueuing():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    from queue import Queue
+    from threading import Event
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    q, done = Queue(), Event()
+
+    with patch("app.generator.stream_generate", return_value=iter([])):
+        gen._stream_into_queue("prompt", 512, q, done)
+
+    assert q.empty()
+    assert done.is_set()
+
+
 # ── hit_rate() unit tests ─────────────────────────────────
 
 def test_hit_rate_all_relevant_retrieved():
