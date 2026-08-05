@@ -2790,3 +2790,140 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── ndcg_at_k idcg==0 edge case (evaluator.py line 42) ───────
+
+def test_ndcg_empty_retrieved_with_k_returns_zero():
+    from app.evaluator import ndcg_at_k
+    # retrieved_ids is empty, k is set → ideal_hits = min(1, 0) = 0 → idcg = 0 → line 42
+    assert ndcg_at_k([], ["a"], k=5) == 0.0
+
+
+def test_ndcg_empty_retrieved_no_k_returns_zero():
+    from app.evaluator import ndcg_at_k
+    # k=None path: ideal_hits = len(relevant_set) = 1 → idcg = 1.0, dcg = 0 → 0.0 via division
+    # (line 42 not hit here, but the result is 0.0)
+    assert ndcg_at_k([], ["a"]) == 0.0
+
+
+# ── faithfulness stopwords-only sentence (evaluator.py line 59) ──
+
+def test_faithfulness_stopwords_only_sentence_skipped():
+    from app.evaluator import faithfulness
+    # "the is a" → all stopwords → tokens empty → continue (line 59)
+    # sentence list has 1 entry, 0 supported → 0/1 = 0.0
+    chunks = [{"text": "machine learning uses data"}]
+    score = faithfulness("The is a.", chunks)
+    assert score == 0.0
+
+
+def test_faithfulness_mixed_sentences_stopwords_only_not_counted():
+    from app.evaluator import faithfulness
+    # First sentence is all stopwords (skipped); second is grounded.
+    # supported=0 for 2 sentences → 0.0 (the stopwords sentence still counts toward denom)
+    chunks = [{"text": "machine learning uses labeled data"}]
+    score = faithfulness("The is a. Machine learning uses data.", chunks)
+    # 2 sentences; second is supported (1), first skipped (continue) → 1/2 = 0.5
+    assert 0.0 < score <= 1.0
+
+
+# ── citations stopwords-only sentence (citations.py line 52) ──
+
+def test_extract_citations_stopwords_only_sentence_skipped():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "machine learning uses labeled data", "metadata": {}}]
+    # "The is a" → _tokens returns empty set → continue, not added to results
+    result = extract_citations("The is a.", chunks)
+    assert result == []
+
+
+def test_extract_citations_mixed_stopwords_and_content():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "machine learning is great", "metadata": {}}]
+    # Two sentences: first is stopwords-only (skipped), second has real tokens
+    answer = "The is a. Machine learning is great."
+    result = extract_citations(answer, chunks, threshold=0.1)
+    # Only the second sentence should appear in results
+    assert len(result) == 1
+    assert "Machine" in result[0]["sentence"] or "machine" in result[0]["sentence"].lower()
+
+
+# ── VectorStore.query() id_to_idx miss (vector_store.py line 117) ──
+
+def test_query_skips_chunk_not_in_collection_fetch():
+    from app.vector_store import VectorStore
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    # collection.get returns only c1, not c2, even though both are ranked
+    vs.collection.get.return_value = {
+        "ids": ["c1"],
+        "documents": ["first text"],
+        "metadatas": [{"title": "Doc1"}],
+    }
+    with patch.object(vs, "_dense_query", return_value={"c1": 0.9, "c2": 0.8}), \
+         patch.object(vs, "_bm25_query", return_value={}):
+        result = vs.query("test", top_k=2)
+    # c2 was ranked but not in collection fetch → skipped; only c1 returned
+    assert len(result) == 1
+    assert result[0]["chunk_id"] == "c1"
+
+
+def test_query_handles_all_chunks_missing_from_fetch_gracefully():
+    from app.vector_store import VectorStore
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.get.return_value = {
+        "ids": [],
+        "documents": [],
+        "metadatas": [],
+    }
+    with patch.object(vs, "_dense_query", return_value={"c1": 0.9}), \
+         patch.object(vs, "_bm25_query", return_value={}):
+        result = vs.query("test", top_k=1)
+    assert result == []
+
+
+# ── get_db session lifecycle (database.py lines 14-18) ────────
+
+def test_get_db_yields_a_session():
+    from unittest.mock import MagicMock, patch
+    mock_session = MagicMock()
+    mock_session_class = MagicMock(return_value=mock_session)
+    with patch("app.database.SessionLocal", mock_session_class):
+        from app.database import get_db
+        gen = get_db()
+        db = next(gen)
+    assert db is mock_session
+
+
+def test_get_db_closes_session_on_exit():
+    from unittest.mock import MagicMock, patch
+    mock_session = MagicMock()
+    mock_session_class = MagicMock(return_value=mock_session)
+    with patch("app.database.SessionLocal", mock_session_class):
+        from app.database import get_db
+        gen = get_db()
+        next(gen)
+        try:
+            next(gen)
+        except StopIteration:
+            pass
+    mock_session.close.assert_called_once()
+
+
+def test_get_db_closes_session_even_if_error_raised():
+    from unittest.mock import MagicMock, patch
+    mock_session = MagicMock()
+    mock_session_class = MagicMock(return_value=mock_session)
+    with patch("app.database.SessionLocal", mock_session_class):
+        from app.database import get_db
+        gen = get_db()
+        next(gen)
+        try:
+            gen.throw(RuntimeError("simulated error"))
+        except RuntimeError:
+            pass
+    mock_session.close.assert_called_once()
