@@ -2927,3 +2927,234 @@ def test_get_db_closes_session_even_if_error_raised():
         except RuntimeError:
             pass
     mock_session.close.assert_called_once()
+
+
+# ── reranker._get_model() unit tests ─────────────────────────
+
+def test_get_model_creates_cross_encoder_on_first_call():
+    import app.reranker as _mod
+    from app.reranker import _get_model, RERANKER_MODEL
+    from unittest.mock import patch, MagicMock
+    saved = _mod._model
+    _mod._model = None
+    try:
+        fake_ce = MagicMock()
+        with patch("app.reranker.CrossEncoder", return_value=fake_ce) as MockCE:
+            result = _get_model()
+        MockCE.assert_called_once_with(RERANKER_MODEL)
+        assert result is fake_ce
+        assert _mod._model is fake_ce
+    finally:
+        _mod._model = saved
+
+
+def test_get_model_returns_cached_model_on_second_call():
+    import app.reranker as _mod
+    from app.reranker import _get_model
+    from unittest.mock import patch, MagicMock
+    saved = _mod._model
+    _mod._model = None
+    try:
+        fake_ce = MagicMock()
+        with patch("app.reranker.CrossEncoder", return_value=fake_ce) as MockCE:
+            _get_model()
+            result2 = _get_model()
+        MockCE.assert_called_once()
+        assert result2 is fake_ce
+    finally:
+        _mod._model = saved
+
+
+def test_get_model_does_not_reload_when_already_set():
+    import app.reranker as _mod
+    from app.reranker import _get_model
+    from unittest.mock import patch, MagicMock
+    saved = _mod._model
+    existing = MagicMock(name="existing_model")
+    _mod._model = existing
+    try:
+        with patch("app.reranker.CrossEncoder") as MockCE:
+            result = _get_model()
+        MockCE.assert_not_called()
+        assert result is existing
+    finally:
+        _mod._model = saved
+
+
+# ── Generator.load_model() unit tests ─────────────────────────
+
+def test_load_model_sets_model_and_tokenizer():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    fake_model = MagicMock()
+    fake_tokenizer = MagicMock()
+    with patch("app.generator.load", return_value=(fake_model, fake_tokenizer)):
+        gen.load_model()
+    assert gen.model is fake_model
+    assert gen.tokenizer is fake_tokenizer
+
+
+def test_load_model_calls_load_with_model_id():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    gen._model_id = "test-model-id"
+    with patch("app.generator.load", return_value=(MagicMock(), MagicMock())) as mock_load:
+        gen.load_model()
+    mock_load.assert_called_once_with("test-model-id")
+
+
+# ── Generator._stream_into_queue() unit tests ─────────────────
+
+def test_stream_into_queue_puts_chunk_texts_in_queue():
+    from app.generator import Generator
+    from unittest.mock import MagicMock, patch
+    from queue import Queue
+    from threading import Event
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    chunk1 = MagicMock(text="hello")
+    chunk2 = MagicMock(text=" world")
+    q = Queue()
+    done = Event()
+    with patch("app.generator.stream_generate", return_value=[chunk1, chunk2]):
+        gen._stream_into_queue("prompt", 512, q, done)
+    assert q.get_nowait() == "hello"
+    assert q.get_nowait() == " world"
+
+
+def test_stream_into_queue_sets_done_after_generating():
+    from app.generator import Generator
+    from unittest.mock import MagicMock, patch
+    from queue import Queue
+    from threading import Event
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    q = Queue()
+    done = Event()
+    with patch("app.generator.stream_generate", return_value=[]):
+        gen._stream_into_queue("prompt", 512, q, done)
+    assert done.is_set()
+
+
+def test_stream_into_queue_sets_done_even_on_exception():
+    from app.generator import Generator
+    from unittest.mock import MagicMock, patch
+    from queue import Queue
+    from threading import Event
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    q = Queue()
+    done = Event()
+    with patch("app.generator.stream_generate", side_effect=RuntimeError("stream failure")):
+        try:
+            gen._stream_into_queue("prompt", 512, q, done)
+        except RuntimeError:
+            pass
+    assert done.is_set()
+
+
+def test_stream_into_queue_passes_correct_args_to_stream_generate():
+    from app.generator import Generator
+    from unittest.mock import MagicMock, patch
+    from queue import Queue
+    from threading import Event
+    gen = Generator()
+    gen.model = MagicMock(name="the_model")
+    gen.tokenizer = MagicMock(name="the_tokenizer")
+    q = Queue()
+    done = Event()
+    with patch("app.generator.stream_generate", return_value=[]) as mock_sg:
+        gen._stream_into_queue("my prompt", 256, q, done)
+    mock_sg.assert_called_once_with(
+        gen.model,
+        gen.tokenizer,
+        prompt="my prompt",
+        max_tokens=256,
+    )
+
+
+# ── Generator.answer_stream() except Empty path ───────────────
+
+def test_answer_stream_continues_on_empty_queue_timeout():
+    import time
+    from app.generator import Generator
+    from unittest.mock import MagicMock
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+
+    def slow_stream(prompt, max_tokens, q, done):
+        time.sleep(0.08)
+        done.set()
+
+    gen._stream_into_queue = slow_stream
+    items = asyncio.run(_collect_stream(gen.answer_stream("q", [])))
+    assert items == ["[DONE]"]
+
+
+# ── /query/stream malformed payload handling (main.py line 109) ──
+
+def test_stream_ignores_malformed_json_payload():
+    from unittest.mock import patch, MagicMock
+    mock_db = MagicMock()
+    _override_db(mock_db)
+
+    async def _bad_stream(query, chunks, max_tokens=512):
+        yield "not-valid-json"
+        yield _json.dumps({"missing_token_key": "value"})
+        yield "[DONE]"
+
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _bad_stream
+            r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    finally:
+        _clear_overrides()
+    assert r.status_code == 200
+    assert "data: [DONE]" in r.text
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.answer == "(empty stream)"
+
+
+# ── lifespan startup (main.py lines 34-36) ────────────────────
+
+def test_lifespan_calls_generator_load_model():
+    from unittest.mock import patch, MagicMock
+    from app.main import lifespan, app as _app
+    import asyncio as _asyncio
+
+    async def _run():
+        async with lifespan(_app):
+            pass
+
+    with patch("app.main.generator") as mock_gen, \
+         patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 0
+        _asyncio.run(_run())
+    mock_gen.load_model.assert_called_once()
+
+
+def test_lifespan_prints_chunk_count():
+    from unittest.mock import patch, MagicMock
+    from app.main import lifespan, app as _app
+    import asyncio as _asyncio
+
+    async def _run():
+        async with lifespan(_app):
+            pass
+
+    with patch("app.main.generator") as mock_gen, \
+         patch("app.main.vector_store") as mock_vs, \
+         patch("builtins.print") as mock_print:
+        mock_vs.count.return_value = 7
+        _asyncio.run(_run())
+    printed = " ".join(str(a) for call_args in mock_print.call_args_list for a in call_args[0])
+    assert "7" in printed
