@@ -3158,3 +3158,30 @@ def test_lifespan_prints_chunk_count():
         _asyncio.run(_run())
     printed = " ".join(str(a) for call_args in mock_print.call_args_list for a in call_args[0])
     assert "7" in printed
+
+
+# ── startup DB migration exception path (main.py lines 28-29) ──
+
+def test_startup_migration_exception_is_swallowed():
+    import importlib
+    from unittest.mock import patch
+    import app.main as main_mod
+
+    # Patch create_all to raise so the except branch (lines 28-29) executes.
+    with patch("app.models.Base.metadata.create_all", side_effect=Exception("DB unavailable")):
+        importlib.reload(main_mod)
+    # If we reach this line the except clause swallowed the exception correctly.
+
+
+def test_startup_migration_engine_connect_exception_is_swallowed():
+    import importlib
+    from unittest.mock import patch, MagicMock
+    import app.main as main_mod
+
+    # create_all succeeds; engine.connect raises to hit the except path.
+    mock_conn = MagicMock()
+    mock_conn.__enter__ = MagicMock(side_effect=Exception("connection refused"))
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    with patch("app.models.Base.metadata.create_all"), \
+         patch("app.database.engine.connect", return_value=mock_conn):
+        importlib.reload(main_mod)
