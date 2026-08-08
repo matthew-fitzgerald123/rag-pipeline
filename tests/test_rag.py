@@ -3185,3 +3185,160 @@ def test_startup_migration_engine_connect_exception_is_swallowed():
     with patch("app.models.Base.metadata.create_all"), \
          patch("app.database.engine.connect", return_value=mock_conn):
         importlib.reload(main_mod)
+
+
+# ── scripts/ingest.py ingest_file() unit tests ───────────────
+
+def test_ingest_file_empty_content_is_noop(tmp_path):
+    from scripts.ingest import ingest_file
+    from unittest.mock import MagicMock
+    f = tmp_path / "empty.txt"
+    f.write_text("")
+    mock_db = MagicMock()
+    with _patch_vs():
+        ingest_file(f, mock_db)
+    mock_db.add.assert_not_called()
+    mock_db.commit.assert_not_called()
+
+
+def test_ingest_file_whitespace_only_is_noop(tmp_path):
+    from scripts.ingest import ingest_file
+    from unittest.mock import MagicMock
+    f = tmp_path / "spaces.txt"
+    f.write_text("   \n\t  ")
+    mock_db = MagicMock()
+    with _patch_vs():
+        ingest_file(f, mock_db)
+    mock_db.add.assert_not_called()
+
+
+def test_ingest_file_skips_duplicate_title(tmp_path):
+    from scripts.ingest import ingest_file
+    from unittest.mock import MagicMock
+    f = tmp_path / "ml_basics.txt"
+    f.write_text("Some machine learning content here.")
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter_by.return_value.first.return_value = MagicMock()
+    with _patch_vs():
+        ingest_file(f, mock_db)
+    mock_db.add.assert_not_called()
+
+
+def test_ingest_file_adds_document_to_db(tmp_path):
+    from scripts.ingest import ingest_file
+    from app.models import Document
+    from unittest.mock import MagicMock
+    f = tmp_path / "new_doc.txt"
+    f.write_text("Machine learning is a field of AI that uses data.")
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter_by.return_value.first.return_value = None
+    with _patch_vs():
+        ingest_file(f, mock_db)
+    mock_db.add.assert_called_once()
+    doc_arg = mock_db.add.call_args[0][0]
+    assert isinstance(doc_arg, Document)
+
+
+def test_ingest_file_commits_to_db_after_adding(tmp_path):
+    from scripts.ingest import ingest_file
+    from unittest.mock import MagicMock
+    f = tmp_path / "doc.txt"
+    f.write_text("Some real content about neural networks.")
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter_by.return_value.first.return_value = None
+    with _patch_vs():
+        ingest_file(f, mock_db)
+    mock_db.commit.assert_called()
+
+
+def test_ingest_file_title_matches_path_stem(tmp_path):
+    from scripts.ingest import ingest_file
+    from app.models import Document
+    from unittest.mock import MagicMock
+    f = tmp_path / "deep_learning.txt"
+    f.write_text("Deep learning uses multiple layers of neurons.")
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter_by.return_value.first.return_value = None
+    with _patch_vs():
+        ingest_file(f, mock_db)
+    doc_arg = mock_db.add.call_args[0][0]
+    assert doc_arg.title == "deep_learning"
+
+
+def test_ingest_file_doc_content_matches_file(tmp_path):
+    from scripts.ingest import ingest_file
+    from app.models import Document
+    from unittest.mock import MagicMock
+    content = "Supervised learning trains models on labeled examples."
+    f = tmp_path / "doc.txt"
+    f.write_text(content)
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter_by.return_value.first.return_value = None
+    with _patch_vs():
+        ingest_file(f, mock_db)
+    doc_arg = mock_db.add.call_args[0][0]
+    assert doc_arg.content == content
+
+
+def test_ingest_file_calls_add_chunks_on_vector_store(tmp_path):
+    from scripts.ingest import ingest_file
+    from unittest.mock import MagicMock, patch
+    f = tmp_path / "doc.txt"
+    f.write_text("Neural networks learn representations from raw data.")
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter_by.return_value.first.return_value = None
+    mock_vs = MagicMock()
+    with patch("scripts.ingest.vector_store", mock_vs):
+        ingest_file(f, mock_db)
+    mock_vs.add_chunks.assert_called_once()
+
+
+def test_ingest_file_chunk_metadata_has_title(tmp_path):
+    from scripts.ingest import ingest_file
+    from app.chunker import Chunk
+    from unittest.mock import MagicMock, patch
+    f = tmp_path / "intro_ml.txt"
+    f.write_text("Machine learning is the study of algorithms that improve through experience.")
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter_by.return_value.first.return_value = None
+    mock_vs = MagicMock()
+    with patch("scripts.ingest.vector_store", mock_vs):
+        ingest_file(f, mock_db)
+    chunks_passed = mock_vs.add_chunks.call_args[0][0]
+    assert len(chunks_passed) >= 1
+    assert all(c.metadata.get("title") == "intro_ml" for c in chunks_passed)
+
+
+def test_ingest_file_chunk_metadata_has_source(tmp_path):
+    from scripts.ingest import ingest_file
+    from unittest.mock import MagicMock, patch
+    f = tmp_path / "rl_basics.txt"
+    f.write_text("Reinforcement learning trains agents through reward signals in an environment.")
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter_by.return_value.first.return_value = None
+    mock_vs = MagicMock()
+    with patch("scripts.ingest.vector_store", mock_vs):
+        ingest_file(f, mock_db)
+    chunks_passed = mock_vs.add_chunks.call_args[0][0]
+    assert all(c.metadata.get("source") == str(f) for c in chunks_passed)
+
+
+def test_ingest_file_chunks_have_correct_doc_id(tmp_path):
+    from scripts.ingest import ingest_file
+    from unittest.mock import MagicMock, patch
+    from app.models import Document
+    f = tmp_path / "doc.txt"
+    f.write_text("Overfitting occurs when a model memorizes the training data too closely.")
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter_by.return_value.first.return_value = None
+    mock_vs = MagicMock()
+    with patch("scripts.ingest.vector_store", mock_vs):
+        ingest_file(f, mock_db)
+    doc_obj = mock_db.add.call_args[0][0]
+    chunks_passed = mock_vs.add_chunks.call_args[0][0]
+    assert all(c.doc_id == doc_obj.doc_id for c in chunks_passed)
+
+
+def _patch_vs():
+    from unittest.mock import patch, MagicMock
+    return patch("scripts.ingest.vector_store", MagicMock())
