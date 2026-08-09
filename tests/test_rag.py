@@ -3342,3 +3342,47 @@ def test_ingest_file_chunks_have_correct_doc_id(tmp_path):
 def _patch_vs():
     from unittest.mock import patch, MagicMock
     return patch("scripts.ingest.vector_store", MagicMock())
+
+
+# ── scripts/ingest.py __main__ block unit tests ──────────────────
+# These tests use runpy.run_path so coverage.py traces the actual lines
+# in scripts/ingest.py (lines 49-59).
+
+def test_ingest_main_normal_flow():
+    """__main__ block: create_all called, files ingested, session closed."""
+    import runpy
+    from unittest.mock import patch, MagicMock
+
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter_by.return_value.first.return_value = None
+
+    with patch("app.models.Base.metadata.create_all") as mock_create, \
+         patch("app.database.SessionLocal", return_value=mock_db), \
+         patch("app.vector_store.vector_store") as mock_vs, \
+         patch("builtins.print"):
+        mock_vs.count.return_value = 5
+        runpy.run_path("scripts/ingest.py", run_name="__main__")
+
+    mock_create.assert_called_once()
+    mock_vs.add_chunks.assert_called_once()
+    mock_db.close.assert_called_once()
+
+
+def test_ingest_main_exits_with_1_when_no_txt_files():
+    """__main__ block: sys.exit(1) when DATA_DIR contains no .txt files."""
+    import runpy
+    from pathlib import Path
+    from unittest.mock import patch, MagicMock
+
+    mock_db = MagicMock()
+
+    with patch("app.models.Base.metadata.create_all"), \
+         patch("app.database.SessionLocal", return_value=mock_db), \
+         patch.object(Path, "glob", return_value=iter([])), \
+         patch("app.vector_store.vector_store") as mock_vs, \
+         patch("builtins.print"), \
+         patch("sys.exit") as mock_exit:
+        mock_vs.count.return_value = 0
+        runpy.run_path("scripts/ingest.py", run_name="__main__")
+
+    mock_exit.assert_called_with(1)
