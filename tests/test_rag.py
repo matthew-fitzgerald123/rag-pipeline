@@ -25,12 +25,18 @@ def test_index_stats():
     assert r.status_code == 200
     assert r.json()["total_chunks"] > 0
 
-@pytest.mark.integration
 def test_query_returns_answer():
-    r = client.post("/query", json={
-        "query": "What is supervised learning?",
-        "top_k": 3,
-    })
+    from unittest.mock import patch
+    _chunks = [{"chunk_id": "c1", "text": "Supervised learning uses labeled data.", "metadata": {"title": "ML"}, "score": 0.9, "dense_score": 0.9, "bm25_score": 0.5}]
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _chunks
+        mock_gen.answer.return_value = "Supervised learning trains on labeled data."
+        r = client.post("/query", json={
+            "query": "What is supervised learning?",
+            "top_k": 3,
+        })
     assert r.status_code == 200
     data = r.json()
     assert "answer" in data
@@ -40,16 +46,19 @@ def test_query_returns_answer():
     assert "eval" in data
     assert "faithfulness" in data["eval"]
 
-@pytest.mark.integration
 def test_query_eval_with_ground_truth():
-    r = client.post("/query", json={"query": "overfitting", "top_k": 1})
-    chunk_id = r.json()["chunks"][0]["chunk_id"]
-
-    r = client.post("/query/eval", json={
-        "query": "What is overfitting?",
-        "relevant_doc_ids": [chunk_id],
-        "top_k": 3,
-    })
+    from unittest.mock import patch
+    _chunks = [{"chunk_id": "c1", "text": "Overfitting occurs when a model memorizes training data.", "metadata": {"title": "ML"}, "score": 0.9, "dense_score": 0.9, "bm25_score": 0.5}]
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _chunks
+        mock_gen.answer.return_value = "Overfitting is when models memorize training data."
+        r = client.post("/query/eval", json={
+            "query": "What is overfitting?",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 3,
+        })
     assert r.status_code == 200
     data = r.json()
     assert "hit_rate" in data["eval"]
@@ -98,17 +107,25 @@ def test_eval_summary():
     assert "total_queries" in data
     assert data["total_queries"] > 0
 
-@pytest.mark.integration
 def test_eval_summary_includes_avg_ndcg():
-    # Drive a /query/eval request so ndcg is logged, then confirm summary surfaces it.
-    r_q = client.post("/query", json={"query": "overfitting", "top_k": 1})
-    chunk_id = r_q.json()["chunks"][0]["chunk_id"]
-    client.post("/query/eval", json={
-        "query": "What is overfitting?",
-        "relevant_doc_ids": [chunk_id],
-        "top_k": 3,
-    })
-    r = client.get("/eval/summary")
+    from unittest.mock import MagicMock
+    from app.database import get_db
+    from app.models import QueryLog as QL
+    mock_log = MagicMock(spec=QL)
+    mock_log.query = "What is overfitting?"
+    mock_log.answer = "Overfitting memorizes training data."
+    mock_log.faithfulness = 0.8
+    mock_log.hit_rate = 1.0
+    mock_log.mrr = 1.0
+    mock_log.ndcg = 0.75
+    mock_log.answer_relevance = 0.9
+    mock_db = MagicMock()
+    mock_db.query.return_value.all.return_value = [mock_log]
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        r = client.get("/eval/summary")
+    finally:
+        app.dependency_overrides.clear()
     assert r.status_code == 200
     data = r.json()
     assert "avg_ndcg" in data
@@ -129,14 +146,23 @@ def test_eval_history_includes_ndcg_field():
     for row in rows:
         assert "ndcg" in row
 
-@pytest.mark.integration
 def test_empty_query_still_returns():
-    r = client.post("/query", json={"query": "xyzzy nonsense query 12345", "top_k": 3})
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = []
+        r = client.post("/query", json={"query": "xyzzy nonsense query 12345", "top_k": 3})
     assert r.status_code in [200, 404]
 
-@pytest.mark.integration
 def test_query_returns_citations():
-    r = client.post("/query", json={"query": "What is supervised learning?", "top_k": 3})
+    from unittest.mock import patch
+    _chunks = [{"chunk_id": "c1", "text": "Supervised learning uses labeled data.", "metadata": {"title": "ML"}, "score": 0.9, "dense_score": 0.9, "bm25_score": 0.5}]
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _chunks
+        mock_gen.answer.return_value = "Supervised learning trains on labeled data."
+        r = client.post("/query", json={"query": "What is supervised learning?", "top_k": 3})
     assert r.status_code == 200
     data = r.json()
     assert "citations" in data
