@@ -90,6 +90,12 @@ def test_ndcg_respects_k_cutoff():
     # The single relevant doc sits at rank 3, outside k=2, so it cannot contribute.
     assert ndcg_at_k(["x", "y", "a"], ["a"], k=2) == 0.0
 
+
+def test_ndcg_empty_retrieved_with_relevant_is_zero():
+    from app.evaluator import ndcg_at_k
+    # No retrieved docs → ranked is empty → ideal_hits=0 → idcg=0 → returns 0.0
+    assert ndcg_at_k([], ["a"], k=5) == 0.0
+
 @pytest.mark.integration
 def test_eval_summary():
     r = client.get("/eval/summary")
@@ -518,6 +524,17 @@ def test_faithfulness_multiple_chunks_increase_score():
     assert score_many >= score_one
 
 
+def test_faithfulness_stopword_only_sentence_does_not_inflate_score():
+    from app.evaluator import faithfulness
+    # A sentence composed entirely of stopwords contributes nothing to faithfulness.
+    chunks = [{"text": "neural networks learn representations from data"}]
+    answer = "The is an are. Neural networks learn from data."
+    score = faithfulness(answer, chunks)
+    # Only the second sentence is meaningful; the stopword-only sentence is skipped
+    # but still counted in the denominator, so score < 1.0.
+    assert 0.0 <= score < 1.0
+
+
 # ── answer_relevance() unit tests ─────────────────────────
 
 def test_answer_relevance_full_overlap():
@@ -781,6 +798,17 @@ def test_extract_citations_sorted_by_overlap_descending():
     cites = result[0]["citations"]
     if len(cites) >= 2:
         assert cites[0]["overlap"] >= cites[1]["overlap"]
+
+
+def test_extract_citations_stopword_only_sentence_excluded():
+    from app.citations import extract_citations
+    # A sentence with only stopword tokens is skipped and not included in results.
+    chunks = [{"chunk_id": "c1", "text": "neural networks learn features", "metadata": {}}]
+    answer = "The is an are. Neural networks learn features."
+    result = extract_citations(answer, chunks, threshold=0.1)
+    sentences_in_result = [r["sentence"] for r in result]
+    assert all("is an" not in s for s in sentences_in_result)
+    assert any("Neural" in s for s in sentences_in_result)
 
 
 # ── rerank() unit tests ───────────────────────────────────
