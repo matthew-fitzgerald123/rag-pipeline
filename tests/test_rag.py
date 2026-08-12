@@ -518,6 +518,33 @@ def test_faithfulness_multiple_chunks_increase_score():
     assert score_many >= score_one
 
 
+def test_faithfulness_stopword_only_sentence_excluded_from_denominator():
+    from app.evaluator import faithfulness
+    # The stopword-only sentence has no meaningful tokens and is excluded from
+    # both numerator and denominator; only the meaningful sentence is scored.
+    chunks = [{"text": "neural networks learn representations from data"}]
+    answer = "The is an are. Neural networks learn from data."
+    score = faithfulness(answer, chunks)
+    assert score == 1.0
+
+
+def test_faithfulness_all_stopword_sentences_returns_zero():
+    from app.evaluator import faithfulness
+    # When every sentence reduces to the empty token set, return 0.0 rather
+    # than dividing by zero.
+    chunks = [{"text": "neural networks learn from data"}]
+    assert faithfulness("The is an. Are we or.", chunks) == 0.0
+
+
+def test_faithfulness_mixed_stopword_and_meaningful_scores_only_meaningful():
+    from app.evaluator import faithfulness
+    # One stopword sentence + one ungrounded meaningful sentence → 0/1 = 0.0.
+    chunks = [{"text": "photosynthesis converts sunlight into glucose"}]
+    answer = "The is an are. Quantum mechanics describes wave duality."
+    score = faithfulness(answer, chunks)
+    assert score == 0.0
+
+
 # ── answer_relevance() unit tests ─────────────────────────
 
 def test_answer_relevance_full_overlap():

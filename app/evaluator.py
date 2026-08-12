@@ -51,17 +51,21 @@ def faithfulness(answer: str, context_chunks: list[dict]) -> float:
         return 0.0
 
     supported = 0
+    meaningful = 0
     for sentence in sentences:
         tokens = set(re.findall(r"\w+", sentence.lower()))
         stopwords = {"the","a","an","is","are","was","were","in","on","at","to","of","and","or","it","this","that","i","you","we","they"}
         tokens -= stopwords
         if not tokens:
             continue
+        meaningful += 1
         overlap = tokens & context_tokens
         if len(overlap) / len(tokens) > 0.4:
             supported += 1
 
-    return round(supported / len(sentences), 4)
+    if not meaningful:
+        return 0.0
+    return round(supported / meaningful, 4)
 
 def answer_relevance(query: str, answer: str) -> float:
     query_tokens = set(re.findall(r"\w+", query.lower()))
