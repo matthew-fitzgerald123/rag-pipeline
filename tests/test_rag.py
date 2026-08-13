@@ -518,6 +518,33 @@ def test_faithfulness_multiple_chunks_increase_score():
     assert score_many >= score_one
 
 
+def test_faithfulness_stopword_only_sentence_excluded_from_denominator():
+    from app.evaluator import faithfulness
+    # The stopword-only sentence has no meaningful tokens and is excluded from
+    # both numerator and denominator; only the meaningful sentence is scored.
+    chunks = [{"text": "neural networks learn representations from data"}]
+    answer = "The is an are. Neural networks learn from data."
+    score = faithfulness(answer, chunks)
+    assert score == 1.0
+
+
+def test_faithfulness_all_stopword_sentences_returns_zero():
+    from app.evaluator import faithfulness
+    # When every sentence reduces to the empty token set, return 0.0 rather
+    # than dividing by zero.
+    chunks = [{"text": "neural networks learn from data"}]
+    assert faithfulness("The is an. Are we or.", chunks) == 0.0
+
+
+def test_faithfulness_mixed_stopword_and_meaningful_scores_only_meaningful():
+    from app.evaluator import faithfulness
+    # One stopword sentence + one ungrounded meaningful sentence → 0/1 = 0.0.
+    chunks = [{"text": "photosynthesis converts sunlight into glucose"}]
+    answer = "The is an are. Quantum mechanics describes wave duality."
+    score = faithfulness(answer, chunks)
+    assert score == 0.0
+
+
 # ── answer_relevance() unit tests ─────────────────────────
 
 def test_answer_relevance_full_overlap():
@@ -2426,3 +2453,111 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── ndcg_at_k(k=None) full-ranking branch ────────────────────
+
+def test_ndcg_k_none_perfect_ranking():
+    from app.evaluator import ndcg_at_k
+    # All relevant docs at the top with no k cutoff still yields 1.0.
+    assert ndcg_at_k(["a", "b", "c"], ["a", "b"]) == 1.0
+
+
+def test_ndcg_k_none_partial_ranking_is_between_zero_and_one():
+    from app.evaluator import ndcg_at_k
+    score = ndcg_at_k(["x", "a", "y", "b"], ["a", "b"])
+    assert 0.0 < score < 1.0
+
+
+def test_ndcg_k_none_no_relevant_retrieved_is_zero():
+    from app.evaluator import ndcg_at_k
+    assert ndcg_at_k(["x", "y", "z"], ["a"]) == 0.0
+
+
+def test_ndcg_k_none_includes_docs_beyond_what_k_would_cut():
+    from app.evaluator import ndcg_at_k
+    # With k=3, the relevant doc "a" at rank 4 is outside the window → 0.
+    # With k=None, it is included and contributes a positive score.
+    assert ndcg_at_k(["x", "y", "z", "a"], ["a"], k=3) == 0.0
+    assert ndcg_at_k(["x", "y", "z", "a"], ["a"]) > 0.0
+
+
+def test_ndcg_k_none_empty_relevant_is_zero():
+    from app.evaluator import ndcg_at_k
+    assert ndcg_at_k(["a", "b"], []) == 0.0
+
+
+def test_ndcg_empty_retrieved_with_relevant_and_k_is_zero():
+    from app.evaluator import ndcg_at_k
+    # retrieved is empty → ranked is empty → ideal_hits=0 → idcg=0 → return 0.0
+    assert ndcg_at_k([], ["a"], k=5) == 0.0
+
+
+# ── extract_citations stopword-only sentence branch ───────────
+
+def test_extract_citations_stopword_only_sentence_is_excluded():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "Neural networks learn representations.", "metadata": {}}]
+    # The first sentence collapses to the empty token set after stopword removal,
+    # so it is skipped and never appears in the results.
+    result = extract_citations("The is an are. Neural networks learn representations.", chunks, threshold=0.1)
+    sentences = [r["sentence"] for r in result]
+    assert not any(s.strip() in ("The is an are", "The is an are.") for s in sentences)
+    assert any("Neural" in s for s in sentences)
+
+
+def test_extract_citations_all_stopword_sentences_returns_empty():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "Neural networks learn from data.", "metadata": {}}]
+    # Every sentence in the answer strips down to no meaningful tokens.
+    result = extract_citations("The is an. Are or.", chunks, threshold=0.1)
+    assert result == []
+
+
+# ── /query/stream malformed token handling (main.py:109) ─────
+
+def test_stream_malformed_json_token_does_not_crash():
+    from unittest.mock import patch, MagicMock
+
+    async def _malformed_stream(query, chunks, max_tokens=512):
+        yield "not-valid-json"
+        yield _json.dumps({"token": "good"})
+        yield "[DONE]"
+
+    mock_db = MagicMock()
+    _override_db(mock_db)
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _malformed_stream
+            r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    finally:
+        _clear_overrides()
+    assert r.status_code == 200
+    assert "data: [DONE]" in r.text
+
+
+def test_stream_token_missing_key_does_not_crash():
+    from unittest.mock import patch, MagicMock
+
+    async def _missing_key_stream(query, chunks, max_tokens=512):
+        yield _json.dumps({"other": "value"})
+        yield _json.dumps({"token": "ok"})
+        yield "[DONE]"
+
+    mock_db = MagicMock()
+    _override_db(mock_db)
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _missing_key_stream
+            r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    finally:
+        _clear_overrides()
+    assert r.status_code == 200
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.answer == "ok"
