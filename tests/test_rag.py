@@ -2561,3 +2561,102 @@ def test_stream_token_missing_key_does_not_crash():
     assert r.status_code == 200
     log_obj = mock_db.add.call_args[0][0]
     assert log_obj.answer == "ok"
+
+
+# ── ndcg_at_k exact DCG formula tests ────────────────────────
+
+def test_ndcg_exact_two_relevant_first_two_positions():
+    from app.evaluator import ndcg_at_k
+    from math import log2
+    # Both relevant docs at rank 1 and 2 → perfect DCG = IDCG → 1.0
+    dcg  = 1 / log2(2) + 1 / log2(3)
+    idcg = 1 / log2(2) + 1 / log2(3)
+    assert ndcg_at_k(["a", "b", "x"], ["a", "b"], k=3) == round(dcg / idcg, 4)
+
+
+def test_ndcg_exact_relevant_at_ranks_1_and_3():
+    from app.evaluator import ndcg_at_k
+    from math import log2
+    # Relevant docs at rank 1 and 3; ideal is rank 1 and 2.
+    dcg  = 1 / log2(2) + 1 / log2(4)
+    idcg = 1 / log2(2) + 1 / log2(3)
+    assert ndcg_at_k(["a", "x", "b"], ["a", "b"], k=3) == round(dcg / idcg, 4)
+
+
+def test_ndcg_exact_single_relevant_at_rank_2():
+    from app.evaluator import ndcg_at_k
+    from math import log2
+    # Relevant doc at rank 2; ideal is rank 1.
+    dcg  = 1 / log2(3)
+    idcg = 1 / log2(2)
+    assert ndcg_at_k(["x", "a", "y"], ["a"], k=3) == round(dcg / idcg, 4)
+
+
+def test_ndcg_exact_single_relevant_at_rank_3():
+    from app.evaluator import ndcg_at_k
+    from math import log2
+    dcg  = 1 / log2(4)
+    idcg = 1 / log2(2)
+    assert ndcg_at_k(["x", "y", "a"], ["a"], k=3) == round(dcg / idcg, 4)
+
+
+# ── faithfulness exact ratio tests ───────────────────────────
+
+def test_faithfulness_exactly_half_sentences_grounded():
+    from app.evaluator import faithfulness
+    # Two meaningful sentences; only the first is supported by the context.
+    # Expected: 1 supported / 2 meaningful = 0.5
+    chunks = [{"text": "neural networks learn representations from data"}]
+    answer = "Neural networks learn from data. Quantum mechanics describes wave duality."
+    score = faithfulness(answer, chunks)
+    assert score == 0.5
+
+
+def test_faithfulness_two_of_three_sentences_grounded():
+    from app.evaluator import faithfulness
+    # Three meaningful sentences; two match the context strongly.
+    chunks = [{"text": "overfitting regularization machine learning model"}]
+    answer = (
+        "Overfitting is a problem in machine learning. "
+        "Regularization helps reduce overfitting. "
+        "Photosynthesis converts sunlight into glucose."
+    )
+    score = faithfulness(answer, chunks)
+    assert score == round(2 / 3, 4)
+
+
+# ── VectorStore.query() missing-id guard tests ───────────────
+
+def test_query_skips_chunk_not_returned_by_chroma():
+    from app.vector_store import VectorStore
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    # ChromaDB returns only c1, not c2 (simulates a race condition / deleted doc).
+    vs.collection.get.return_value = {
+        "ids": ["c1"],
+        "documents": ["text for c1"],
+        "metadatas": [{"title": "Doc"}],
+    }
+    with patch.object(vs, "_dense_query", return_value={"c1": 0.9, "c2": 0.7}), \
+         patch.object(vs, "_bm25_query", return_value={}):
+        result = vs.query("test", top_k=2)
+    # c2 ranked high but ChromaDB didn't return it, so only c1 appears.
+    assert len(result) == 1
+    assert result[0]["chunk_id"] == "c1"
+
+
+def test_query_result_excludes_all_when_chroma_returns_none():
+    from app.vector_store import VectorStore
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.get.return_value = {
+        "ids": [],
+        "documents": [],
+        "metadatas": [],
+    }
+    with patch.object(vs, "_dense_query", return_value={"c1": 0.9}), \
+         patch.object(vs, "_bm25_query", return_value={}):
+        result = vs.query("test", top_k=1)
+    assert result == []
