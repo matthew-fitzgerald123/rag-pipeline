@@ -1686,6 +1686,7 @@ def test_query_eval_no_chunks_returns_404():
     app.dependency_overrides[get_db] = lambda: mock_db
     try:
         with patch("app.main.vector_store") as mock_vs:
+            mock_vs.count.return_value = 5
             mock_vs.query.return_value = []
             r = client.post("/query/eval", json={
                 "query": "What is ML?",
@@ -1695,6 +1696,42 @@ def test_query_eval_no_chunks_returns_404():
     finally:
         app.dependency_overrides.clear()
     assert r.status_code == 404
+
+
+def test_query_eval_empty_index_returns_400():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 0
+        r = client.post("/query/eval", json={
+            "query": "What is ML?",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 3,
+        })
+    assert r.status_code == 400
+
+
+def test_query_eval_empty_index_error_message():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 0
+        r = client.post("/query/eval", json={
+            "query": "What is ML?",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 3,
+        })
+    assert "No documents indexed" in r.json()["detail"]
+
+
+def test_query_eval_empty_index_does_not_call_query():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 0
+        client.post("/query/eval", json={
+            "query": "What is ML?",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 3,
+        })
+    mock_vs.query.assert_not_called()
 
 
 def test_query_eval_response_has_all_eval_fields():
