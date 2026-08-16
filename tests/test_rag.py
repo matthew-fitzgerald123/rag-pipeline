@@ -2426,3 +2426,87 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── top_k input validation unit tests ────────────────────────
+
+def test_query_top_k_zero_returns_422():
+    r = client.post("/query", json={"query": "What is ML?", "top_k": 0})
+    assert r.status_code == 422
+
+
+def test_query_top_k_negative_returns_422():
+    r = client.post("/query", json={"query": "What is ML?", "top_k": -1})
+    assert r.status_code == 422
+
+
+def test_query_top_k_large_negative_returns_422():
+    r = client.post("/query", json={"query": "What is ML?", "top_k": -100})
+    assert r.status_code == 422
+
+
+def test_query_top_k_one_is_valid():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "An answer."
+        r = client.post("/query", json={"query": "What is ML?", "top_k": 1})
+    assert r.status_code == 200
+
+
+def test_query_eval_top_k_zero_returns_422():
+    r = client.post("/query/eval", json={
+        "query": "What is ML?",
+        "relevant_doc_ids": ["c1"],
+        "top_k": 0,
+    })
+    assert r.status_code == 422
+
+
+def test_query_eval_top_k_negative_returns_422():
+    r = client.post("/query/eval", json={
+        "query": "What is ML?",
+        "relevant_doc_ids": ["c1"],
+        "top_k": -5,
+    })
+    assert r.status_code == 422
+
+
+def test_query_eval_top_k_one_is_valid():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _EVAL_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            r = client.post("/query/eval", json={
+                "query": "supervised learning",
+                "relevant_doc_ids": ["c1"],
+                "top_k": 1,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    assert r.status_code == 200
+
+
+def test_query_stream_top_k_zero_returns_422():
+    r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 0})
+    assert r.status_code == 422
+
+
+def test_query_stream_top_k_negative_returns_422():
+    r = client.post("/query/stream", json={"query": "What is ML?", "top_k": -3})
+    assert r.status_code == 422
+
+
+def test_query_top_k_validation_error_response_structure():
+    r = client.post("/query", json={"query": "What is ML?", "top_k": 0})
+    assert r.status_code == 422
+    body = r.json()
+    assert "detail" in body
