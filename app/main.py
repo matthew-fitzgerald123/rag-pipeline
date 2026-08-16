@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any, AsyncIterator
 import json
 import os
@@ -42,13 +42,13 @@ app = FastAPI(title="RAG Pipeline", version="1.0.0", lifespan=lifespan)
 
 class QueryReq(BaseModel):
     query: str
-    top_k: int = 5
+    top_k: int = Field(5, ge=1)
     rerank: bool = False
 
 class EvalQueryReq(BaseModel):
     query: str
     relevant_doc_ids: list[str]
-    top_k: int = 5
+    top_k: int = Field(5, ge=1)
     rerank: bool = False
 
 @app.post("/query", tags=["rag"])
