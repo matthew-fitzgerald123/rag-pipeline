@@ -1686,6 +1686,7 @@ def test_query_eval_no_chunks_returns_404():
     app.dependency_overrides[get_db] = lambda: mock_db
     try:
         with patch("app.main.vector_store") as mock_vs:
+            mock_vs.count.return_value = 5
             mock_vs.query.return_value = []
             r = client.post("/query/eval", json={
                 "query": "What is ML?",
@@ -1695,6 +1696,115 @@ def test_query_eval_no_chunks_returns_404():
     finally:
         app.dependency_overrides.clear()
     assert r.status_code == 404
+
+
+def test_query_eval_empty_index_returns_400():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs:
+            mock_vs.count.return_value = 0
+            r = client.post("/query/eval", json={
+                "query": "What is ML?",
+                "relevant_doc_ids": ["c1"],
+                "top_k": 3,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    assert r.status_code == 400
+
+
+def test_query_eval_response_has_citations_field():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _EVAL_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            r = client.post("/query/eval", json={
+                "query": "supervised learning",
+                "relevant_doc_ids": ["c1"],
+                "top_k": 1,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    assert r.status_code == 200
+    assert "citations" in r.json()
+    assert isinstance(r.json()["citations"], list)
+
+
+def test_query_eval_response_has_reranked_field():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _EVAL_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            r = client.post("/query/eval", json={
+                "query": "supervised learning",
+                "relevant_doc_ids": ["c1"],
+                "top_k": 1,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    assert r.status_code == 200
+    assert "reranked" in r.json()
+
+
+def test_query_eval_reranked_false_when_not_requested():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _EVAL_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            r = client.post("/query/eval", json={
+                "query": "supervised learning",
+                "relevant_doc_ids": ["c1"],
+                "top_k": 1,
+                "rerank": False,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    assert r.json()["reranked"] is False
+
+
+def test_query_eval_reranked_true_when_requested():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen, \
+             patch("app.main.rerank") as mock_rerank:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _EVAL_FAKE_CHUNKS
+            mock_rerank.return_value = _EVAL_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            r = client.post("/query/eval", json={
+                "query": "supervised learning",
+                "relevant_doc_ids": ["c1"],
+                "top_k": 1,
+                "rerank": True,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    assert r.json()["reranked"] is True
 
 
 def test_query_eval_response_has_all_eval_fields():
