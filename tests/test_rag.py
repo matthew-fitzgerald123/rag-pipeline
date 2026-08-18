@@ -2426,3 +2426,110 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── fetch_k optimization unit tests ──────────────────────────────
+
+
+def test_query_fetches_top_k_only_when_not_reranking():
+    from unittest.mock import patch
+    from app.reranker import RERANKER_TOP_K
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Answer."
+        client.post("/query", json={"query": "q", "top_k": 3, "rerank": False})
+    called_top_k = mock_vs.query.call_args[1]["top_k"]
+    assert called_top_k == 3
+
+
+def test_query_fetches_reranker_top_k_when_reranking():
+    from unittest.mock import patch
+    from app.reranker import RERANKER_TOP_K
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen, \
+         patch("app.main.rerank") as mock_rerank:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_rerank.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Answer."
+        client.post("/query", json={"query": "q", "top_k": 3, "rerank": True})
+    called_top_k = mock_vs.query.call_args[1]["top_k"]
+    assert called_top_k == max(3, RERANKER_TOP_K)
+
+
+def test_query_fetch_k_equals_top_k_when_top_k_exceeds_reranker_top_k():
+    from unittest.mock import patch
+    from app.reranker import RERANKER_TOP_K
+    large_top_k = RERANKER_TOP_K + 5
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen, \
+         patch("app.main.rerank") as mock_rerank:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_rerank.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Answer."
+        client.post("/query", json={"query": "q", "top_k": large_top_k, "rerank": True})
+    called_top_k = mock_vs.query.call_args[1]["top_k"]
+    assert called_top_k == large_top_k
+
+
+def test_stream_fetches_top_k_only_when_not_reranking():
+    from unittest.mock import patch
+    from app.reranker import RERANKER_TOP_K
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        client.post("/query/stream", json={"query": "q", "top_k": 3, "rerank": False})
+    called_top_k = mock_vs.query.call_args[1]["top_k"]
+    assert called_top_k == 3
+
+
+def test_stream_fetches_reranker_top_k_when_reranking():
+    from unittest.mock import patch
+    from app.reranker import RERANKER_TOP_K
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen, \
+         patch("app.main.rerank") as mock_rerank:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_rerank.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        client.post("/query/stream", json={"query": "q", "top_k": 3, "rerank": True})
+    called_top_k = mock_vs.query.call_args[1]["top_k"]
+    assert called_top_k == max(3, RERANKER_TOP_K)
+
+
+def test_query_eval_fetches_top_k_only_when_not_reranking():
+    from unittest.mock import patch
+    from app.reranker import RERANKER_TOP_K
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _EVAL_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Answer."
+        client.post("/query/eval", json={
+            "query": "q", "relevant_doc_ids": ["c1"], "top_k": 3, "rerank": False,
+        })
+    called_top_k = mock_vs.query.call_args[1]["top_k"]
+    assert called_top_k == 3
+
+
+def test_query_eval_fetches_reranker_top_k_when_reranking():
+    from unittest.mock import patch
+    from app.reranker import RERANKER_TOP_K
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen, \
+         patch("app.main.rerank") as mock_rerank:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _EVAL_FAKE_CHUNKS
+        mock_rerank.return_value = _EVAL_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Answer."
+        client.post("/query/eval", json={
+            "query": "q", "relevant_doc_ids": ["c1"], "top_k": 3, "rerank": True,
+        })
+    called_top_k = mock_vs.query.call_args[1]["top_k"]
+    assert called_top_k == max(3, RERANKER_TOP_K)

@@ -56,7 +56,8 @@ def query(req: QueryReq, db: Session = Depends(get_db)):
     if vector_store.count() == 0:
         raise HTTPException(400, "No documents indexed. Run: make ingest")
 
-    candidates = vector_store.query(req.query, top_k=max(req.top_k, RERANKER_TOP_K))
+    fetch_k = max(req.top_k, RERANKER_TOP_K) if req.rerank else req.top_k
+    candidates = vector_store.query(req.query, top_k=fetch_k)
     if not candidates:
         raise HTTPException(404, "No relevant chunks found")
 
@@ -93,7 +94,8 @@ async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
     if vector_store.count() == 0:
         raise HTTPException(400, "No documents indexed -- run: make ingest")
 
-    candidates = vector_store.query(req.query, top_k=max(req.top_k, RERANKER_TOP_K))
+    fetch_k = max(req.top_k, RERANKER_TOP_K) if req.rerank else req.top_k
+    candidates = vector_store.query(req.query, top_k=fetch_k)
     if not candidates:
         raise HTTPException(404, "No relevant chunks found")
 
@@ -124,7 +126,8 @@ async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
 
 @app.post("/query/eval", tags=["rag"])
 def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
-    candidates = vector_store.query(req.query, top_k=max(req.top_k, RERANKER_TOP_K))
+    fetch_k = max(req.top_k, RERANKER_TOP_K) if req.rerank else req.top_k
+    candidates = vector_store.query(req.query, top_k=fetch_k)
     if not candidates:
         raise HTTPException(404, "No relevant chunks found")
 
