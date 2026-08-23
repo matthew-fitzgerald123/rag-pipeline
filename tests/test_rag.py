@@ -2726,3 +2726,153 @@ def test_reset_clears_bm25_ids():
     vs._bm25_ids = ["c1", "c2", "c3"]
     vs.reset()
     assert vs._bm25_ids == []
+
+
+# ── VectorStore._rebuild_bm25() unit tests ────────────────────
+
+def test_rebuild_bm25_empty_collection_clears_bm25():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 0
+    vs._bm25 = object()
+    vs._bm25_ids = ["stale"]
+    vs._rebuild_bm25()
+    assert vs._bm25 is None
+
+
+def test_rebuild_bm25_empty_collection_clears_ids():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 0
+    vs._bm25 = None
+    vs._bm25_ids = ["stale_id"]
+    vs._rebuild_bm25()
+    assert vs._bm25_ids == []
+
+
+def test_rebuild_bm25_empty_collection_skips_get():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 0
+    vs._bm25 = None
+    vs._bm25_ids = []
+    vs._rebuild_bm25()
+    vs.collection.get.assert_not_called()
+
+
+def test_rebuild_bm25_nonempty_sets_bm25_ids():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 2
+    vs.collection.get.return_value = {
+        "ids": ["c1", "c2"],
+        "documents": ["machine learning model", "deep neural network"],
+    }
+    vs._bm25 = None
+    vs._bm25_ids = []
+    vs._rebuild_bm25()
+    assert vs._bm25_ids == ["c1", "c2"]
+
+
+def test_rebuild_bm25_nonempty_creates_bm25okapi_instance():
+    from app.vector_store import VectorStore
+    from rank_bm25 import BM25Okapi
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 1
+    vs.collection.get.return_value = {
+        "ids": ["c1"],
+        "documents": ["supervised learning uses labeled data"],
+    }
+    vs._bm25 = None
+    vs._bm25_ids = []
+    vs._rebuild_bm25()
+    assert isinstance(vs._bm25, BM25Okapi)
+
+
+def test_rebuild_bm25_calls_get_with_documents_include():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 1
+    vs.collection.get.return_value = {
+        "ids": ["c1"],
+        "documents": ["some text here"],
+    }
+    vs._bm25 = None
+    vs._bm25_ids = []
+    vs._rebuild_bm25()
+    vs.collection.get.assert_called_once_with(include=["documents"])
+
+
+def test_rebuild_bm25_replaces_stale_index():
+    from app.vector_store import VectorStore
+    from rank_bm25 import BM25Okapi
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 2
+    vs.collection.get.return_value = {
+        "ids": ["new_c1", "new_c2"],
+        "documents": ["overfitting regularization", "gradient descent optimizer"],
+    }
+    vs._bm25 = MagicMock()
+    vs._bm25_ids = ["old_c1"]
+    vs._rebuild_bm25()
+    assert vs._bm25_ids == ["new_c1", "new_c2"]
+    assert isinstance(vs._bm25, BM25Okapi)
+
+
+def test_rebuild_bm25_resulting_index_scores_matching_doc_highest():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 3
+    vs.collection.get.return_value = {
+        "ids": ["c1", "c2", "c3"],
+        "documents": [
+            "machine learning model training",
+            "deep neural network layers",
+            "natural language processing text",
+        ],
+    }
+    vs._bm25 = None
+    vs._bm25_ids = []
+    vs._rebuild_bm25()
+    result = vs._bm25_query("machine learning", top_k=3)
+    assert "c1" in result
+    assert result["c1"] > result.get("c2", 0.0)
+
+
+def test_rebuild_bm25_unique_term_scores_its_doc():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    # Needs >= 3 docs so BM25 IDF is positive for a term that appears in only 1 doc.
+    vs.collection.count.return_value = 3
+    vs.collection.get.return_value = {
+        "ids": ["c1", "c2", "c3"],
+        "documents": [
+            "overfitting occurs when a model memorizes training data",
+            "gradient descent optimizes the loss function",
+            "regularization reduces overfitting in neural networks",
+        ],
+    }
+    vs._bm25 = None
+    vs._bm25_ids = []
+    vs._rebuild_bm25()
+    # "gradient" appears only in c2, so it should receive a positive BM25 score.
+    result = vs._bm25_query("gradient", top_k=3)
+    assert "c2" in result
