@@ -2876,3 +2876,106 @@ def test_rebuild_bm25_unique_term_scores_its_doc():
     # "gradient" appears only in c2, so it should receive a positive BM25 score.
     result = vs._bm25_query("gradient", top_k=3)
     assert "c2" in result
+
+
+# ── reranker._get_model() unit tests ─────────────────────────
+
+def test_get_model_returns_cross_encoder_instance():
+    from app.reranker import _get_model
+    from sentence_transformers import CrossEncoder
+    from unittest.mock import patch, MagicMock
+    import app.reranker as reranker_mod
+
+    original = reranker_mod._model
+    try:
+        reranker_mod._model = None
+        fake = MagicMock(spec=CrossEncoder)
+        with patch("app.reranker.CrossEncoder", return_value=fake):
+            result = _get_model()
+        assert result is fake
+    finally:
+        reranker_mod._model = original
+
+
+def test_get_model_caches_instance_on_second_call():
+    from app.reranker import _get_model
+    from sentence_transformers import CrossEncoder
+    from unittest.mock import patch, MagicMock
+    import app.reranker as reranker_mod
+
+    original = reranker_mod._model
+    try:
+        reranker_mod._model = None
+        fake = MagicMock(spec=CrossEncoder)
+        with patch("app.reranker.CrossEncoder", return_value=fake):
+            first = _get_model()
+            second = _get_model()
+        assert first is second
+    finally:
+        reranker_mod._model = original
+
+
+def test_get_model_only_instantiates_cross_encoder_once():
+    from app.reranker import _get_model
+    from unittest.mock import patch, MagicMock
+    import app.reranker as reranker_mod
+
+    original = reranker_mod._model
+    try:
+        reranker_mod._model = None
+        fake = MagicMock()
+        with patch("app.reranker.CrossEncoder", return_value=fake) as mock_cls:
+            _get_model()
+            _get_model()
+            _get_model()
+        mock_cls.assert_called_once()
+    finally:
+        reranker_mod._model = original
+
+
+def test_get_model_returns_cached_when_already_set():
+    from app.reranker import _get_model
+    from unittest.mock import patch, MagicMock
+    import app.reranker as reranker_mod
+
+    original = reranker_mod._model
+    try:
+        preloaded = MagicMock()
+        reranker_mod._model = preloaded
+        with patch("app.reranker.CrossEncoder") as mock_cls:
+            result = _get_model()
+        mock_cls.assert_not_called()
+        assert result is preloaded
+    finally:
+        reranker_mod._model = original
+
+
+def test_get_model_sets_global_after_first_call():
+    from app.reranker import _get_model
+    from unittest.mock import patch, MagicMock
+    import app.reranker as reranker_mod
+
+    original = reranker_mod._model
+    try:
+        reranker_mod._model = None
+        fake = MagicMock()
+        with patch("app.reranker.CrossEncoder", return_value=fake):
+            _get_model()
+        assert reranker_mod._model is fake
+    finally:
+        reranker_mod._model = original
+
+
+def test_get_model_passes_reranker_model_name_to_cross_encoder():
+    from app.reranker import _get_model, RERANKER_MODEL
+    from unittest.mock import patch, MagicMock
+    import app.reranker as reranker_mod
+
+    original = reranker_mod._model
+    try:
+        reranker_mod._model = None
+        with patch("app.reranker.CrossEncoder", return_value=MagicMock()) as mock_cls:
+            _get_model()
+        mock_cls.assert_called_once_with(RERANKER_MODEL)
+    finally:
+        reranker_mod._model = original
