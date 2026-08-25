@@ -2979,3 +2979,99 @@ def test_get_model_passes_reranker_model_name_to_cross_encoder():
         mock_cls.assert_called_once_with(RERANKER_MODEL)
     finally:
         reranker_mod._model = original
+
+
+# ── ingest_file() unit tests ──────────────────────────────
+
+
+def _make_tmp_file(tmp_path_factory, content: str, stem: str = "testdoc"):
+    tmp = tmp_path_factory.mktemp("data") / f"{stem}.txt"
+    tmp.write_text(content, encoding="utf-8")
+    return tmp
+
+
+def _make_mock_db(existing_doc=None):
+    from unittest.mock import MagicMock
+    db = MagicMock()
+    db.query.return_value.filter_by.return_value.first.return_value = existing_doc
+    return db
+
+
+def test_ingest_file_skips_empty_content(tmp_path_factory):
+    from scripts.ingest import ingest_file
+    tmp = _make_tmp_file(tmp_path_factory, "", stem="empty")
+    db = _make_mock_db()
+    ingest_file(tmp, db)
+    db.add.assert_not_called()
+
+
+def test_ingest_file_skips_whitespace_only_content(tmp_path_factory):
+    from scripts.ingest import ingest_file
+    tmp = _make_tmp_file(tmp_path_factory, "   \n\t  ", stem="whitespace")
+    db = _make_mock_db()
+    ingest_file(tmp, db)
+    db.add.assert_not_called()
+
+
+def test_ingest_file_skips_already_ingested_title(tmp_path_factory):
+    from scripts.ingest import ingest_file
+    from unittest.mock import MagicMock
+    tmp = _make_tmp_file(tmp_path_factory, "Some content here.", stem="existing")
+    existing = MagicMock()
+    db = _make_mock_db(existing_doc=existing)
+    ingest_file(tmp, db)
+    db.add.assert_not_called()
+
+
+def test_ingest_file_creates_document_in_db(tmp_path_factory):
+    from scripts.ingest import ingest_file
+    from unittest.mock import patch
+    tmp = _make_tmp_file(tmp_path_factory, "Machine learning content.", stem="newdoc")
+    db = _make_mock_db()
+    with patch("scripts.ingest.vector_store") as mock_vs:
+        mock_vs.add_chunks.return_value = None
+        ingest_file(tmp, db)
+    db.add.assert_called_once()
+
+
+def test_ingest_file_document_title_is_file_stem(tmp_path_factory):
+    from scripts.ingest import ingest_file
+    from unittest.mock import patch
+    tmp = _make_tmp_file(tmp_path_factory, "Neural networks learn features.", stem="ml_basics")
+    db = _make_mock_db()
+    with patch("scripts.ingest.vector_store"):
+        ingest_file(tmp, db)
+    doc = db.add.call_args[0][0]
+    assert doc.title == "ml_basics"
+
+
+def test_ingest_file_document_content_matches_file(tmp_path_factory):
+    from scripts.ingest import ingest_file
+    from unittest.mock import patch
+    content = "Supervised learning trains on labeled examples."
+    tmp = _make_tmp_file(tmp_path_factory, content, stem="supervised")
+    db = _make_mock_db()
+    with patch("scripts.ingest.vector_store"):
+        ingest_file(tmp, db)
+    doc = db.add.call_args[0][0]
+    assert doc.content == content
+
+
+def test_ingest_file_calls_add_chunks_on_vector_store(tmp_path_factory):
+    from scripts.ingest import ingest_file
+    from unittest.mock import patch
+    tmp = _make_tmp_file(tmp_path_factory, "Overfitting occurs when models memorize data.", stem="overfit")
+    db = _make_mock_db()
+    with patch("scripts.ingest.vector_store") as mock_vs:
+        ingest_file(tmp, db)
+    mock_vs.add_chunks.assert_called_once()
+
+
+def test_ingest_file_commits_db_after_add(tmp_path_factory):
+    from scripts.ingest import ingest_file
+    from unittest.mock import patch
+    tmp = _make_tmp_file(tmp_path_factory, "Gradient descent minimizes the loss function.", stem="gradient")
+    db = _make_mock_db()
+    with patch("scripts.ingest.vector_store"):
+        ingest_file(tmp, db)
+    db.commit.assert_called()
