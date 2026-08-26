@@ -3075,3 +3075,148 @@ def test_ingest_file_commits_db_after_add(tmp_path_factory):
     with patch("scripts.ingest.vector_store"):
         ingest_file(tmp, db)
     db.commit.assert_called()
+
+
+def test_ingest_file_doc_id_is_8_chars(tmp_path_factory):
+    from scripts.ingest import ingest_file
+    from unittest.mock import patch
+    tmp = _make_tmp_file(tmp_path_factory, "Content for doc_id length check.", stem="docidcheck")
+    db = _make_mock_db()
+    with patch("scripts.ingest.vector_store"):
+        ingest_file(tmp, db)
+    doc = db.add.call_args[0][0]
+    assert len(doc.doc_id) == 8
+
+
+def test_ingest_file_chunk_metadata_has_title(tmp_path_factory):
+    from scripts.ingest import ingest_file
+    from unittest.mock import patch, MagicMock
+    from app.chunker import Chunk
+    tmp = _make_tmp_file(tmp_path_factory, "Neural networks learn feature representations.", stem="nn_basics")
+    db = _make_mock_db()
+    fake_chunk = Chunk(chunk_id="nn_basics_chunk_0", doc_id="abc12345", text="Neural networks learn.", metadata={"title": "nn_basics", "source": str(tmp), "chunk_index": 0, "doc_id": "abc12345"})
+    with patch("scripts.ingest.chunk_document", return_value=[fake_chunk]) as mock_chunk, \
+         patch("scripts.ingest.vector_store"):
+        ingest_file(tmp, db)
+    call_kwargs = mock_chunk.call_args[1]
+    assert call_kwargs["metadata"]["title"] == "nn_basics"
+
+
+def test_ingest_file_chunk_metadata_has_source_path(tmp_path_factory):
+    from scripts.ingest import ingest_file
+    from unittest.mock import patch
+    from app.chunker import Chunk
+    tmp = _make_tmp_file(tmp_path_factory, "Backpropagation computes gradients.", stem="backprop")
+    db = _make_mock_db()
+    fake_chunk = Chunk(chunk_id="backprop_chunk_0", doc_id="abc12345", text="Backpropagation.", metadata={})
+    with patch("scripts.ingest.chunk_document", return_value=[fake_chunk]) as mock_chunk, \
+         patch("scripts.ingest.vector_store"):
+        ingest_file(tmp, db)
+    call_kwargs = mock_chunk.call_args[1]
+    assert call_kwargs["metadata"]["source"] == str(tmp)
+
+
+def test_ingest_file_chunk_document_uses_chunk_size_512(tmp_path_factory):
+    from scripts.ingest import ingest_file
+    from unittest.mock import patch
+    from app.chunker import Chunk
+    tmp = _make_tmp_file(tmp_path_factory, "Regularization reduces overfitting.", stem="regularize")
+    db = _make_mock_db()
+    fake_chunk = Chunk(chunk_id="regularize_chunk_0", doc_id="abc12345", text="Regularization.", metadata={})
+    with patch("scripts.ingest.chunk_document", return_value=[fake_chunk]) as mock_chunk, \
+         patch("scripts.ingest.vector_store"):
+        ingest_file(tmp, db)
+    call_kwargs = mock_chunk.call_args[1]
+    assert call_kwargs["chunk_size"] == 512
+
+
+def test_ingest_file_chunk_document_uses_overlap_64(tmp_path_factory):
+    from scripts.ingest import ingest_file
+    from unittest.mock import patch
+    from app.chunker import Chunk
+    tmp = _make_tmp_file(tmp_path_factory, "Dropout prevents co-adaptation of neurons.", stem="dropout")
+    db = _make_mock_db()
+    fake_chunk = Chunk(chunk_id="dropout_chunk_0", doc_id="abc12345", text="Dropout.", metadata={})
+    with patch("scripts.ingest.chunk_document", return_value=[fake_chunk]) as mock_chunk, \
+         patch("scripts.ingest.vector_store"):
+        ingest_file(tmp, db)
+    call_kwargs = mock_chunk.call_args[1]
+    assert call_kwargs["overlap"] == 64
+
+
+# ── /query retrieval candidate count unit tests ───────────────
+
+
+def test_query_fetches_max_of_top_k_and_reranker_top_k():
+    from unittest.mock import patch, MagicMock
+    from app.reranker import RERANKER_TOP_K
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Some answer."
+        client.post("/query", json={"query": "supervised learning", "top_k": 3})
+    call_kwargs = mock_vs.query.call_args[1]
+    assert call_kwargs["top_k"] == max(3, RERANKER_TOP_K)
+
+
+def test_query_fetches_reranker_top_k_when_top_k_is_small():
+    from unittest.mock import patch
+    from app.reranker import RERANKER_TOP_K
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Some answer."
+        client.post("/query", json={"query": "q", "top_k": 1})
+    call_kwargs = mock_vs.query.call_args[1]
+    assert call_kwargs["top_k"] == RERANKER_TOP_K
+
+
+def test_query_fetches_top_k_when_larger_than_reranker_top_k():
+    from unittest.mock import patch
+    from app.reranker import RERANKER_TOP_K
+    large_top_k = RERANKER_TOP_K + 10
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Some answer."
+        client.post("/query", json={"query": "q", "top_k": large_top_k})
+    call_kwargs = mock_vs.query.call_args[1]
+    assert call_kwargs["top_k"] == large_top_k
+
+
+def test_query_eval_fetches_max_of_top_k_and_reranker_top_k():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    from app.reranker import RERANKER_TOP_K
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.query.return_value = _EVAL_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            client.post("/query/eval", json={
+                "query": "supervised learning",
+                "relevant_doc_ids": ["c1"],
+                "top_k": 3,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    call_kwargs = mock_vs.query.call_args[1]
+    assert call_kwargs["top_k"] == max(3, RERANKER_TOP_K)
+
+
+def test_stream_fetches_max_of_top_k_and_reranker_top_k():
+    from unittest.mock import patch
+    from app.reranker import RERANKER_TOP_K
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    call_kwargs = mock_vs.query.call_args[1]
+    assert call_kwargs["top_k"] == max(3, RERANKER_TOP_K)
