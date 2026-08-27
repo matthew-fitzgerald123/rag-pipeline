@@ -3220,3 +3220,90 @@ def test_stream_fetches_max_of_top_k_and_reranker_top_k():
         client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
     call_kwargs = mock_vs.query.call_args[1]
     assert call_kwargs["top_k"] == max(3, RERANKER_TOP_K)
+
+
+# ── Generator.load_model() unit tests ────────────────────────
+
+
+def test_load_model_calls_mlx_load_with_model_id():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    fake_model = MagicMock()
+    fake_tokenizer = MagicMock()
+    with patch("app.generator.load", return_value=(fake_model, fake_tokenizer)) as mock_load:
+        gen.load_model()
+    mock_load.assert_called_once_with(gen._model_id)
+
+
+def test_load_model_sets_model_attribute():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    fake_model = MagicMock()
+    fake_tokenizer = MagicMock()
+    with patch("app.generator.load", return_value=(fake_model, fake_tokenizer)):
+        gen.load_model()
+    assert gen.model is fake_model
+
+
+def test_load_model_sets_tokenizer_attribute():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    fake_model = MagicMock()
+    fake_tokenizer = MagicMock()
+    with patch("app.generator.load", return_value=(fake_model, fake_tokenizer)):
+        gen.load_model()
+    assert gen.tokenizer is fake_tokenizer
+
+
+def test_load_model_marks_generator_as_loaded():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    assert gen.model is None
+    with patch("app.generator.load", return_value=(MagicMock(), MagicMock())):
+        gen.load_model()
+    assert gen.model is not None
+
+
+def test_load_model_default_model_id_is_mistral():
+    from app.generator import Generator
+    import os
+    from unittest.mock import patch
+    env = {k: v for k, v in os.environ.items() if k != "GEN_MODEL"}
+    with patch.dict(os.environ, env, clear=True):
+        gen = Generator()
+    assert gen._model_id == "mlx-community/Mistral-7B-Instruct-v0.3-4bit"
+
+
+def test_load_model_uses_gen_model_env_var():
+    from app.generator import Generator
+    import os
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"GEN_MODEL": "mlx-community/custom-model-4bit"}):
+        gen = Generator()
+    assert gen._model_id == "mlx-community/custom-model-4bit"
+
+
+def test_load_model_reads_model_id_at_init_not_load_time():
+    from app.generator import Generator
+    import os
+    from unittest.mock import patch, MagicMock
+    with patch.dict(os.environ, {"GEN_MODEL": "mlx-community/init-time-model"}):
+        gen = Generator()
+    with patch.dict(os.environ, {"GEN_MODEL": "mlx-community/load-time-model"}):
+        with patch("app.generator.load", return_value=(MagicMock(), MagicMock())) as mock_load:
+            gen.load_model()
+    mock_load.assert_called_once_with("mlx-community/init-time-model")
+
+
+def test_load_model_not_cached_calls_load_on_each_invocation():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    with patch("app.generator.load", return_value=(MagicMock(), MagicMock())) as mock_load:
+        gen.load_model()
+        gen.load_model()
+    assert mock_load.call_count == 2
