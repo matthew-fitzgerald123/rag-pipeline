@@ -2426,3 +2426,158 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── VectorStore.__init__() unit tests ─────────────────────────
+
+def _make_vs_init_mocks():
+    """Return a (mock_client, mock_collection, mock_embedder) triple and the
+    patch context so callers can enter it."""
+    from unittest.mock import patch, MagicMock
+    mock_client = MagicMock()
+    mock_collection = MagicMock()
+    mock_client.get_or_create_collection.return_value = mock_collection
+    mock_collection.count.return_value = 0
+    mock_embedder = MagicMock()
+    return mock_client, mock_collection, mock_embedder
+
+
+def test_init_creates_persistent_client_with_chroma_path():
+    from unittest.mock import patch, MagicMock
+    import os
+    mock_client, mock_collection, mock_embedder = _make_vs_init_mocks()
+    with patch.dict(os.environ, {"CHROMA_PATH": "/tmp/test_chroma"}), \
+         patch("app.vector_store.chromadb.PersistentClient", return_value=mock_client) as mock_pc, \
+         patch("app.vector_store.SentenceTransformer", return_value=mock_embedder):
+        from app.vector_store import VectorStore
+        VectorStore()
+    call_kwargs = mock_pc.call_args
+    assert call_kwargs[1]["path"] == "/tmp/test_chroma" or call_kwargs[0][0] == "/tmp/test_chroma"
+
+
+def test_init_creates_collection_with_cosine_space():
+    from unittest.mock import patch, MagicMock
+    mock_client, mock_collection, mock_embedder = _make_vs_init_mocks()
+    with patch("app.vector_store.chromadb.PersistentClient", return_value=mock_client), \
+         patch("app.vector_store.SentenceTransformer", return_value=mock_embedder):
+        from app.vector_store import VectorStore
+        VectorStore()
+    mock_client.get_or_create_collection.assert_called_once_with(
+        name="documents",
+        metadata={"hnsw:space": "cosine"},
+    )
+
+
+def test_init_loads_embedder_with_cpu_device():
+    from unittest.mock import patch, MagicMock
+    mock_client, mock_collection, mock_embedder = _make_vs_init_mocks()
+    with patch("app.vector_store.chromadb.PersistentClient", return_value=mock_client), \
+         patch("app.vector_store.SentenceTransformer", return_value=mock_embedder) as mock_st:
+        from app.vector_store import VectorStore
+        VectorStore()
+    call_args = mock_st.call_args
+    assert call_args[1].get("device") == "cpu" or (len(call_args[0]) > 1 and call_args[0][1] == "cpu")
+
+
+def test_init_loads_embedder_with_embed_model_env():
+    from unittest.mock import patch, MagicMock
+    import os
+    mock_client, mock_collection, mock_embedder = _make_vs_init_mocks()
+    with patch.dict(os.environ, {"EMBED_MODEL": "sentence-transformers/custom-model"}), \
+         patch("app.vector_store.chromadb.PersistentClient", return_value=mock_client), \
+         patch("app.vector_store.SentenceTransformer", return_value=mock_embedder) as mock_st:
+        from app.vector_store import VectorStore
+        VectorStore()
+    call_args = mock_st.call_args
+    assert call_args[0][0] == "sentence-transformers/custom-model"
+
+
+def test_init_default_embed_model_is_minilm():
+    from unittest.mock import patch, MagicMock
+    import os
+    mock_client, mock_collection, mock_embedder = _make_vs_init_mocks()
+    env = {k: v for k, v in os.environ.items() if k != "EMBED_MODEL"}
+    with patch.dict(os.environ, env, clear=True), \
+         patch("app.vector_store.chromadb.PersistentClient", return_value=mock_client), \
+         patch("app.vector_store.SentenceTransformer", return_value=mock_embedder) as mock_st:
+        from app.vector_store import VectorStore
+        VectorStore()
+    call_args = mock_st.call_args
+    assert call_args[0][0] == "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def test_init_default_chroma_path_is_chroma_db():
+    from unittest.mock import patch, MagicMock
+    import os
+    mock_client, mock_collection, mock_embedder = _make_vs_init_mocks()
+    env = {k: v for k, v in os.environ.items() if k != "CHROMA_PATH"}
+    with patch.dict(os.environ, env, clear=True), \
+         patch("app.vector_store.chromadb.PersistentClient", return_value=mock_client) as mock_pc, \
+         patch("app.vector_store.SentenceTransformer", return_value=mock_embedder):
+        from app.vector_store import VectorStore
+        VectorStore()
+    call_kwargs = mock_pc.call_args
+    path_arg = call_kwargs[1].get("path") or call_kwargs[0][0]
+    assert path_arg == "./chroma_db"
+
+
+def test_init_bm25_starts_as_none():
+    from unittest.mock import patch, MagicMock
+    mock_client, mock_collection, mock_embedder = _make_vs_init_mocks()
+    with patch("app.vector_store.chromadb.PersistentClient", return_value=mock_client), \
+         patch("app.vector_store.SentenceTransformer", return_value=mock_embedder):
+        from app.vector_store import VectorStore
+        vs = VectorStore()
+    assert vs._bm25 is None
+
+
+def test_init_bm25_ids_starts_as_empty_list():
+    from unittest.mock import patch, MagicMock
+    mock_client, mock_collection, mock_embedder = _make_vs_init_mocks()
+    with patch("app.vector_store.chromadb.PersistentClient", return_value=mock_client), \
+         patch("app.vector_store.SentenceTransformer", return_value=mock_embedder):
+        from app.vector_store import VectorStore
+        vs = VectorStore()
+    assert vs._bm25_ids == []
+
+
+def test_init_collection_attribute_is_collection_from_client():
+    from unittest.mock import patch, MagicMock
+    mock_client, mock_collection, mock_embedder = _make_vs_init_mocks()
+    with patch("app.vector_store.chromadb.PersistentClient", return_value=mock_client), \
+         patch("app.vector_store.SentenceTransformer", return_value=mock_embedder):
+        from app.vector_store import VectorStore
+        vs = VectorStore()
+    assert vs.collection is mock_collection
+
+
+def test_init_embedder_attribute_is_sentence_transformer():
+    from unittest.mock import patch, MagicMock
+    mock_client, mock_collection, mock_embedder = _make_vs_init_mocks()
+    with patch("app.vector_store.chromadb.PersistentClient", return_value=mock_client), \
+         patch("app.vector_store.SentenceTransformer", return_value=mock_embedder):
+        from app.vector_store import VectorStore
+        vs = VectorStore()
+    assert vs.embedder is mock_embedder
+
+
+def test_init_calls_rebuild_bm25():
+    from unittest.mock import patch, MagicMock
+    mock_client, mock_collection, mock_embedder = _make_vs_init_mocks()
+    with patch("app.vector_store.chromadb.PersistentClient", return_value=mock_client), \
+         patch("app.vector_store.SentenceTransformer", return_value=mock_embedder), \
+         patch.object(__import__("app.vector_store", fromlist=["VectorStore"]).VectorStore,
+                      "_rebuild_bm25") as mock_rebuild:
+        from app.vector_store import VectorStore
+        VectorStore()
+    mock_rebuild.assert_called_once()
+
+
+def test_init_client_attribute_is_persistent_client():
+    from unittest.mock import patch, MagicMock
+    mock_client, mock_collection, mock_embedder = _make_vs_init_mocks()
+    with patch("app.vector_store.chromadb.PersistentClient", return_value=mock_client), \
+         patch("app.vector_store.SentenceTransformer", return_value=mock_embedder):
+        from app.vector_store import VectorStore
+        vs = VectorStore()
+    assert vs.client is mock_client
