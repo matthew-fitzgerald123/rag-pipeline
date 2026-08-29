@@ -2581,3 +2581,288 @@ def test_init_client_attribute_is_persistent_client():
         from app.vector_store import VectorStore
         vs = VectorStore()
     assert vs.client is mock_client
+
+
+# ── VectorStore.count() unit tests ───────────────────────────
+
+def _make_vs(collection_count=0):
+    """Return a VectorStore instance with all external deps mocked.
+
+    Always initializes with count=0 so __init__ skips BM25 build, then sets
+    mock_collection.count to the requested value for use in subsequent calls.
+    """
+    from unittest.mock import patch, MagicMock
+    from app.vector_store import VectorStore
+    mock_client = MagicMock()
+    mock_collection = MagicMock()
+    mock_collection.count.return_value = 0  # empty during __init__
+    mock_client.get_or_create_collection.return_value = mock_collection
+    mock_embedder = MagicMock()
+    with patch("app.vector_store.chromadb.PersistentClient", return_value=mock_client), \
+         patch("app.vector_store.SentenceTransformer", return_value=mock_embedder):
+        vs = VectorStore()
+    mock_collection.count.return_value = collection_count
+    return vs, mock_collection, mock_embedder
+
+
+def test_count_delegates_to_collection():
+    vs, mock_collection, _ = _make_vs(collection_count=17)
+    mock_collection.count.reset_mock()
+    mock_collection.count.return_value = 17
+    assert vs.count() == 17
+    mock_collection.count.assert_called_once()
+
+
+def test_count_returns_zero_for_empty_collection():
+    vs, mock_collection, _ = _make_vs(collection_count=0)
+    mock_collection.count.return_value = 0
+    assert vs.count() == 0
+
+
+# ── VectorStore._rebuild_bm25() unit tests ───────────────────
+
+def test_rebuild_bm25_empty_collection_sets_none():
+    vs, mock_collection, _ = _make_vs(collection_count=0)
+    vs._rebuild_bm25()
+    assert vs._bm25 is None
+
+
+def test_rebuild_bm25_empty_collection_sets_empty_ids():
+    vs, mock_collection, _ = _make_vs(collection_count=0)
+    vs._rebuild_bm25()
+    assert vs._bm25_ids == []
+
+
+def test_rebuild_bm25_nonempty_collection_creates_index():
+    from rank_bm25 import BM25Okapi
+    vs, mock_collection, _ = _make_vs(collection_count=2)
+    mock_collection.count.return_value = 2
+    mock_collection.get.return_value = {
+        "ids": ["c1", "c2"],
+        "documents": ["machine learning model", "deep neural network"],
+    }
+    vs._rebuild_bm25()
+    assert isinstance(vs._bm25, BM25Okapi)
+
+
+def test_rebuild_bm25_stores_ids_from_collection():
+    vs, mock_collection, _ = _make_vs(collection_count=2)
+    mock_collection.count.return_value = 2
+    mock_collection.get.return_value = {
+        "ids": ["id_a", "id_b"],
+        "documents": ["text one", "text two"],
+    }
+    vs._rebuild_bm25()
+    assert vs._bm25_ids == ["id_a", "id_b"]
+
+
+def test_rebuild_bm25_calls_collection_get():
+    vs, mock_collection, _ = _make_vs(collection_count=1)
+    mock_collection.count.return_value = 1
+    mock_collection.get.return_value = {
+        "ids": ["c1"],
+        "documents": ["some text"],
+    }
+    mock_collection.get.reset_mock()
+    vs._rebuild_bm25()
+    mock_collection.get.assert_called_once()
+
+
+# ── VectorStore.add_chunks() unit tests ──────────────────────
+
+def _make_chunk(chunk_id, text, doc_id="doc1", metadata=None):
+    from app.chunker import Chunk
+    return Chunk(
+        chunk_id=chunk_id,
+        doc_id=doc_id,
+        text=text,
+        metadata=metadata or {},
+    )
+
+
+def test_add_chunks_empty_list_is_noop():
+    vs, mock_collection, mock_embedder = _make_vs()
+    mock_embedder.encode.reset_mock()
+    mock_collection.add.reset_mock()
+    vs.add_chunks([])
+    mock_embedder.encode.assert_not_called()
+    mock_collection.add.assert_not_called()
+
+
+def test_add_chunks_encodes_texts():
+    import numpy as np
+    vs, mock_collection, mock_embedder = _make_vs()
+    mock_embedder.encode.return_value = np.array([[0.1, 0.2]])
+    mock_collection.count.return_value = 1
+    mock_collection.get.return_value = {"ids": ["c1"], "documents": ["hello"]}
+    chunk = _make_chunk("c1", "hello world")
+    vs.add_chunks([chunk])
+    mock_embedder.encode.assert_called_once()
+    call_args = mock_embedder.encode.call_args
+    assert call_args[0][0] == ["hello world"]
+
+
+def test_add_chunks_calls_collection_add_with_correct_ids():
+    import numpy as np
+    vs, mock_collection, mock_embedder = _make_vs()
+    mock_embedder.encode.return_value = np.array([[0.1, 0.2], [0.3, 0.4]])
+    mock_collection.count.return_value = 2
+    mock_collection.get.return_value = {"ids": ["c1", "c2"], "documents": ["a", "b"]}
+    chunks = [_make_chunk("c1", "text one"), _make_chunk("c2", "text two")]
+    vs.add_chunks(chunks)
+    call_kwargs = mock_collection.add.call_args[1]
+    assert call_kwargs["ids"] == ["c1", "c2"]
+
+
+def test_add_chunks_calls_collection_add_with_documents():
+    import numpy as np
+    vs, mock_collection, mock_embedder = _make_vs()
+    mock_embedder.encode.return_value = np.array([[0.5, 0.5]])
+    mock_collection.count.return_value = 1
+    mock_collection.get.return_value = {"ids": ["c1"], "documents": ["text one"]}
+    chunk = _make_chunk("c1", "text one")
+    vs.add_chunks([chunk])
+    call_kwargs = mock_collection.add.call_args[1]
+    assert call_kwargs["documents"] == ["text one"]
+
+
+def test_add_chunks_calls_collection_add_with_metadatas():
+    import numpy as np
+    vs, mock_collection, mock_embedder = _make_vs()
+    mock_embedder.encode.return_value = np.array([[0.1, 0.2]])
+    mock_collection.count.return_value = 1
+    mock_collection.get.return_value = {"ids": ["c1"], "documents": ["text"]}
+    meta = {"source": "test.txt", "chunk_index": 0}
+    chunk = _make_chunk("c1", "text", metadata=meta)
+    vs.add_chunks([chunk])
+    call_kwargs = mock_collection.add.call_args[1]
+    assert call_kwargs["metadatas"] == [meta]
+
+
+def test_add_chunks_triggers_rebuild_bm25():
+    import numpy as np
+    from unittest.mock import patch
+    vs, mock_collection, mock_embedder = _make_vs()
+    mock_embedder.encode.return_value = np.array([[0.1, 0.2]])
+    mock_collection.count.return_value = 1
+    mock_collection.get.return_value = {"ids": ["c1"], "documents": ["text"]}
+    with patch.object(vs, "_rebuild_bm25") as mock_rebuild:
+        vs.add_chunks([_make_chunk("c1", "text")])
+    mock_rebuild.assert_called_once()
+
+
+def test_add_chunks_passes_embeddings_to_collection():
+    import numpy as np
+    vs, mock_collection, mock_embedder = _make_vs()
+    fake_embedding = np.array([[0.25, 0.75]])
+    mock_embedder.encode.return_value = fake_embedding
+    mock_collection.count.return_value = 1
+    mock_collection.get.return_value = {"ids": ["c1"], "documents": ["text"]}
+    vs.add_chunks([_make_chunk("c1", "text")])
+    call_kwargs = mock_collection.add.call_args[1]
+    assert call_kwargs["embeddings"] == fake_embedding.tolist()
+
+
+# ── VectorStore.reset() unit tests ───────────────────────────
+
+def test_reset_deletes_collection():
+    vs, mock_collection, _ = _make_vs()
+    vs.reset()
+    vs.client.delete_collection.assert_called_once_with("documents")
+
+
+def test_reset_recreates_collection_with_cosine():
+    vs, mock_collection, _ = _make_vs()
+    new_collection = mock_collection.__class__()
+    vs.client.get_or_create_collection.return_value = new_collection
+    vs.reset()
+    vs.client.get_or_create_collection.assert_called_with(
+        name="documents",
+        metadata={"hnsw:space": "cosine"},
+    )
+
+
+def test_reset_sets_bm25_to_none():
+    vs, mock_collection, _ = _make_vs()
+    vs._bm25 = object()
+    vs.reset()
+    assert vs._bm25 is None
+
+
+def test_reset_sets_bm25_ids_to_empty():
+    vs, mock_collection, _ = _make_vs()
+    vs._bm25_ids = ["c1", "c2"]
+    vs.reset()
+    assert vs._bm25_ids == []
+
+
+def test_reset_updates_collection_attribute():
+    vs, mock_collection, _ = _make_vs()
+    from unittest.mock import MagicMock
+    new_col = MagicMock()
+    vs.client.get_or_create_collection.return_value = new_col
+    vs.reset()
+    assert vs.collection is new_col
+
+
+# ── VectorStore._dense_query() unit tests ────────────────────
+
+def test_dense_query_encodes_query_text():
+    import numpy as np
+    vs, mock_collection, mock_embedder = _make_vs()
+    mock_embedder.encode.return_value = np.array([[0.1, 0.2]])
+    mock_collection.count.return_value = 5
+    mock_collection.query.return_value = {"ids": [[]], "distances": [[]]}
+    vs._dense_query("what is ML?", top_k=3)
+    call_args = mock_embedder.encode.call_args
+    assert call_args[0][0] == ["what is ML?"]
+
+
+def test_dense_query_passes_normalized_embeddings():
+    import numpy as np
+    vs, mock_collection, mock_embedder = _make_vs()
+    embedding = np.array([[0.5, 0.5]])
+    mock_embedder.encode.return_value = embedding
+    mock_collection.count.return_value = 5
+    mock_collection.query.return_value = {"ids": [[]], "distances": [[]]}
+    vs._dense_query("query", top_k=3)
+    call_kwargs = mock_collection.query.call_args[1]
+    assert call_kwargs["query_embeddings"] == embedding.tolist()
+
+
+def test_dense_query_returns_score_as_one_minus_distance():
+    import numpy as np
+    vs, mock_collection, mock_embedder = _make_vs()
+    mock_embedder.encode.return_value = np.array([[0.1, 0.2]])
+    mock_collection.count.return_value = 5
+    mock_collection.query.return_value = {
+        "ids": [["c1"]],
+        "distances": [[0.2]],
+    }
+    result = vs._dense_query("query", top_k=1)
+    assert result["c1"] == round(1 - 0.2, 4)
+
+
+def test_dense_query_returns_empty_when_no_results():
+    import numpy as np
+    vs, mock_collection, mock_embedder = _make_vs()
+    mock_embedder.encode.return_value = np.array([[0.1, 0.2]])
+    mock_collection.count.return_value = 5
+    mock_collection.query.return_value = {"ids": [[]], "distances": [[]]}
+    result = vs._dense_query("query", top_k=3)
+    assert result == {}
+
+
+def test_dense_query_returns_dict_keyed_by_chunk_id():
+    import numpy as np
+    vs, mock_collection, mock_embedder = _make_vs()
+    mock_embedder.encode.return_value = np.array([[0.1, 0.2]])
+    mock_collection.count.return_value = 5
+    mock_collection.query.return_value = {
+        "ids": [["c1", "c2"]],
+        "distances": [[0.1, 0.3]],
+    }
+    result = vs._dense_query("query", top_k=2)
+    assert set(result.keys()) == {"c1", "c2"}
+    assert result["c1"] == round(1 - 0.1, 4)
+    assert result["c2"] == round(1 - 0.3, 4)
