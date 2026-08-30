@@ -2426,3 +2426,162 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── Generator.__init__() _model_id unit tests ─────────────────
+
+
+def test_generator_init_model_id_uses_gen_model_env():
+    import os
+    from unittest.mock import patch
+    from app.generator import Generator
+    with patch.dict(os.environ, {"GEN_MODEL": "mlx-community/custom-model-4bit"}):
+        gen = Generator()
+    assert gen._model_id == "mlx-community/custom-model-4bit"
+
+
+def test_generator_init_model_id_default_when_env_unset():
+    import os
+    from app.generator import Generator
+    env = {k: v for k, v in os.environ.items() if k != "GEN_MODEL"}
+    with __import__("unittest.mock", fromlist=["patch"]).patch.dict(os.environ, env, clear=True):
+        gen = Generator()
+    assert gen._model_id == "mlx-community/Mistral-7B-Instruct-v0.3-4bit"
+
+
+def test_generator_init_model_starts_as_none():
+    from app.generator import Generator
+    gen = Generator()
+    assert gen.model is None
+
+
+def test_generator_init_tokenizer_starts_as_none():
+    from app.generator import Generator
+    gen = Generator()
+    assert gen.tokenizer is None
+
+
+# ── Generator.load_model() unit tests ─────────────────────────
+
+
+def test_load_model_sets_model_attribute():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock, sentinel
+    fake_model = sentinel.model
+    fake_tokenizer = sentinel.tokenizer
+    gen = Generator()
+    with patch("app.generator.load", return_value=(fake_model, fake_tokenizer)):
+        gen.load_model()
+    assert gen.model is fake_model
+
+
+def test_load_model_sets_tokenizer_attribute():
+    from app.generator import Generator
+    from unittest.mock import patch, sentinel
+    fake_model = sentinel.model
+    fake_tokenizer = sentinel.tokenizer
+    gen = Generator()
+    with patch("app.generator.load", return_value=(fake_model, fake_tokenizer)):
+        gen.load_model()
+    assert gen.tokenizer is fake_tokenizer
+
+
+def test_load_model_calls_mlx_load_with_model_id():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    gen._model_id = "mlx-community/test-model"
+    captured = {}
+    with patch("app.generator.load", side_effect=lambda m: captured.update({"model_id": m}) or (MagicMock(), MagicMock())):
+        gen.load_model()
+    assert captured["model_id"] == "mlx-community/test-model"
+
+
+def test_load_model_called_twice_overwrites_previous():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock, sentinel
+    gen = Generator()
+    first_model = sentinel.first_model
+    second_model = sentinel.second_model
+    tok = MagicMock()
+    with patch("app.generator.load", return_value=(first_model, tok)):
+        gen.load_model()
+    assert gen.model is first_model
+    with patch("app.generator.load", return_value=(second_model, tok)):
+        gen.load_model()
+    assert gen.model is second_model
+
+
+def test_load_model_makes_answer_callable():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    with patch("app.generator.load", return_value=(MagicMock(), MagicMock())), \
+         patch("app.generator.generate", return_value="an answer"):
+        gen.load_model()
+        result = gen.answer("query", [{"text": "ctx"}])
+    assert result == "an answer"
+
+
+# ── _get_model() caching unit tests ───────────────────────────
+
+
+def test_get_model_returns_cross_encoder_instance():
+    from app.reranker import _get_model
+    from unittest.mock import patch, MagicMock
+    from sentence_transformers import CrossEncoder
+    fake_ce = MagicMock(spec=CrossEncoder)
+    with patch("app.reranker._model", None), \
+         patch("app.reranker.CrossEncoder", return_value=fake_ce) as mock_ce:
+        import app.reranker as _rr
+        _rr._model = None
+        result = _get_model()
+    assert result is fake_ce
+
+
+def test_get_model_loads_once_on_first_call():
+    from unittest.mock import patch, MagicMock, call
+    import app.reranker as _rr
+    original = _rr._model
+    _rr._model = None
+    try:
+        fake_ce = MagicMock()
+        with patch("app.reranker.CrossEncoder", return_value=fake_ce) as mock_ce:
+            _rr._get_model()
+            _rr._get_model()
+        mock_ce.assert_called_once()
+    finally:
+        _rr._model = original
+
+
+def test_get_model_returns_same_instance_on_repeated_calls():
+    import app.reranker as _rr
+    from unittest.mock import patch, MagicMock
+    original = _rr._model
+    _rr._model = None
+    try:
+        fake_ce = MagicMock()
+        with patch("app.reranker.CrossEncoder", return_value=fake_ce):
+            first = _rr._get_model()
+            second = _rr._get_model()
+        assert first is second
+    finally:
+        _rr._model = original
+
+
+def test_get_model_uses_reranker_model_env():
+    import os
+    import app.reranker as _rr
+    from unittest.mock import patch, MagicMock
+    original = _rr._model
+    _rr._model = None
+    try:
+        captured = {}
+        with patch.dict(os.environ, {"RERANKER_MODEL": "cross-encoder/test-model"}), \
+             patch("app.reranker.CrossEncoder", side_effect=lambda m: captured.update({"m": m}) or MagicMock()):
+            _rr.RERANKER_MODEL = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+            _rr._get_model()
+        assert captured.get("m") == "cross-encoder/test-model"
+    finally:
+        _rr._model = original
+        _rr.RERANKER_MODEL = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
