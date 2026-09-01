@@ -2341,6 +2341,49 @@ def test_index_stats_hybrid_alpha_in_valid_range():
     assert 0.0 <= alpha <= 1.0
 
 
+def test_index_stats_includes_reranker_top_k():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 5
+        r = client.get("/index/stats")
+    assert "reranker_top_k" in r.json()
+
+
+def test_index_stats_reranker_top_k_is_int():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 5
+        r = client.get("/index/stats")
+    assert isinstance(r.json()["reranker_top_k"], int)
+
+
+def test_index_stats_reranker_top_k_is_positive():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 5
+        r = client.get("/index/stats")
+    assert r.json()["reranker_top_k"] >= 1
+
+
+def test_index_stats_reranker_top_k_matches_module_constant():
+    from unittest.mock import patch
+    from app.reranker import RERANKER_TOP_K
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 5
+        r = client.get("/index/stats")
+    assert r.json()["reranker_top_k"] == RERANKER_TOP_K
+
+
+def test_index_stats_reranker_top_k_default_is_20():
+    from unittest.mock import patch
+    import os
+    with patch("app.main.vector_store") as mock_vs, \
+         patch.dict(os.environ, {}, clear=False):
+        mock_vs.count.return_value = 5
+        r = client.get("/index/stats")
+    assert r.json()["reranker_top_k"] == int(os.getenv("RERANKER_TOP_K", "20"))
+
+
 # ── /eval/history unit tests ──────────────────────────────────
 
 def _history_with_logs(logs, limit=20):
