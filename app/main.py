@@ -214,13 +214,14 @@ def eval_history(limit: int = 20, db: Session = Depends(get_db)):
 
 @app.get("/index/stats", tags=["monitoring"])
 def index_stats():
-    from app.reranker import RERANKER_MODEL
+    from app.reranker import RERANKER_MODEL, RERANKER_TOP_K
     return {
-        "total_chunks":   vector_store.count(),
-        "embed_model":    os.getenv("EMBED_MODEL"),
-        "gen_model":      os.getenv("GEN_MODEL"),
-        "reranker_model": RERANKER_MODEL,
-        "hybrid_alpha":   float(os.getenv("HYBRID_ALPHA", "0.7")),
+        "total_chunks":    vector_store.count(),
+        "embed_model":     os.getenv("EMBED_MODEL"),
+        "gen_model":       os.getenv("GEN_MODEL"),
+        "reranker_model":  RERANKER_MODEL,
+        "reranker_top_k":  RERANKER_TOP_K,
+        "hybrid_alpha":    float(os.getenv("HYBRID_ALPHA", "0.7")),
     }
 
 @app.get("/health")
