@@ -191,10 +191,11 @@ def eval_summary(db: Session = Depends(get_db)):
     }
 
 @app.get("/eval/history", tags=["monitoring"])
-def eval_history(limit: int = 20, db: Session = Depends(get_db)):
+def eval_history(limit: int = 20, offset: int = 0, db: Session = Depends(get_db)):
     logs = (
         db.query(QueryLog)
         .order_by(QueryLog.created_at.desc())
+        .offset(offset)
         .limit(limit)
         .all()
     )

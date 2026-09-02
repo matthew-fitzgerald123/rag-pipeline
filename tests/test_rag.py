@@ -1586,7 +1586,7 @@ def test_eval_history_includes_answer_relevance_field():
     mock_log.ndcg = None
     mock_log.created_at = __import__("datetime").datetime(2026, 1, 1)
     mock_db = MagicMock()
-    mock_db.query.return_value.order_by.return_value.limit.return_value.all.return_value = [mock_log]
+    mock_db.query.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = [mock_log]
     app.dependency_overrides[get_db] = lambda: mock_db
     try:
         r = client.get("/eval/history?limit=1")
@@ -1613,7 +1613,7 @@ def test_eval_history_answer_relevance_can_be_null():
     mock_log.ndcg = None
     mock_log.created_at = __import__("datetime").datetime(2026, 1, 1)
     mock_db = MagicMock()
-    mock_db.query.return_value.order_by.return_value.limit.return_value.all.return_value = [mock_log]
+    mock_db.query.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = [mock_log]
     app.dependency_overrides[get_db] = lambda: mock_db
     try:
         r = client.get("/eval/history?limit=1")
@@ -2390,7 +2390,7 @@ def _history_with_logs(logs, limit=20):
     from unittest.mock import MagicMock
     from app.database import get_db
     mock_db = MagicMock()
-    mock_db.query.return_value.order_by.return_value.limit.return_value.all.return_value = logs
+    mock_db.query.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = logs
     app.dependency_overrides[get_db] = lambda: mock_db
     try:
         r = client.get(f"/eval/history?limit={limit}")
@@ -2445,13 +2445,13 @@ def test_eval_history_respects_limit_parameter():
     from app.database import get_db
     logs = [_make_log() for _ in range(5)]
     mock_db = MagicMock()
-    mock_db.query.return_value.order_by.return_value.limit.return_value.all.return_value = logs
+    mock_db.query.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = logs
     app.dependency_overrides[get_db] = lambda: mock_db
     try:
         client.get("/eval/history?limit=5")
     finally:
         app.dependency_overrides.clear()
-    mock_db.query.return_value.order_by.return_value.limit.assert_called_once_with(5)
+    mock_db.query.return_value.order_by.return_value.offset.return_value.limit.assert_called_once_with(5)
 
 
 def test_eval_history_created_at_is_string():
@@ -2469,3 +2469,66 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── /eval/history offset pagination unit tests ────────────────
+
+def _history_with_offset(logs, limit=20, offset=0):
+    from unittest.mock import MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    mock_db.query.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = logs
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        r = client.get(f"/eval/history?limit={limit}&offset={offset}")
+    finally:
+        app.dependency_overrides.clear()
+    return r, mock_db
+
+
+def test_eval_history_offset_defaults_to_zero():
+    from unittest.mock import MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    mock_db.query.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = []
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        client.get("/eval/history")
+    finally:
+        app.dependency_overrides.clear()
+    mock_db.query.return_value.order_by.return_value.offset.assert_called_once_with(0)
+
+
+def test_eval_history_offset_param_is_passed_to_query():
+    r, mock_db = _history_with_offset([], limit=5, offset=10)
+    assert r.status_code == 200
+    mock_db.query.return_value.order_by.return_value.offset.assert_called_once_with(10)
+
+
+def test_eval_history_limit_applied_after_offset():
+    r, mock_db = _history_with_offset([], limit=5, offset=10)
+    assert r.status_code == 200
+    mock_db.query.return_value.order_by.return_value.offset.return_value.limit.assert_called_once_with(5)
+
+
+def test_eval_history_offset_zero_equivalent_to_no_offset():
+    r_none, mock_db_none = _history_with_offset([], limit=5, offset=0)
+    assert r_none.status_code == 200
+    mock_db_none.query.return_value.order_by.return_value.offset.assert_called_once_with(0)
+
+
+def test_eval_history_offset_returns_200():
+    logs = [_make_log(faithfulness=0.7)]
+    r, _ = _history_with_offset(logs, limit=1, offset=1)
+    assert r.status_code == 200
+
+
+def test_eval_history_offset_returns_list():
+    logs = [_make_log()]
+    r, _ = _history_with_offset(logs, limit=5, offset=2)
+    assert isinstance(r.json(), list)
+
+
+def test_eval_history_offset_empty_page_returns_empty_list():
+    r, _ = _history_with_offset([], limit=5, offset=100)
+    assert r.json() == []
