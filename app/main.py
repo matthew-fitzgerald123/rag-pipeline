@@ -181,8 +181,10 @@ def eval_summary(db: Session = Depends(get_db)):
         vals = [v for v in vals if v is not None]
         return round(sum(vals) / len(vals), 4) if vals else None
 
+    reranked_count = sum(1 for l in logs if l.reranked is True)
     return {
         "total_queries":        len(logs),
+        "rerank_rate":          round(reranked_count / len(logs), 4),
         "avg_faithfulness":     avg([l.faithfulness for l in logs]),
         "avg_hit_rate":         avg([l.hit_rate for l in logs]),
         "avg_mrr":              avg([l.mrr for l in logs]),

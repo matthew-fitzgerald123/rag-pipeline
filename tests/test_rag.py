@@ -2150,6 +2150,58 @@ def test_eval_summary_averages_rounded_to_four_decimals():
     assert len(str(avg).split(".")[-1]) <= 4
 
 
+# ── /eval/summary rerank_rate unit tests ─────────────────────
+
+def test_eval_summary_includes_rerank_rate_field():
+    logs = [_make_log(reranked=False)]
+    r = _summary_with_logs(logs)
+    assert "rerank_rate" in r.json()
+
+
+def test_eval_summary_rerank_rate_all_reranked():
+    logs = [_make_log(reranked=True), _make_log(reranked=True)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == 1.0
+
+
+def test_eval_summary_rerank_rate_none_reranked():
+    logs = [_make_log(reranked=False), _make_log(reranked=False)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == 0.0
+
+
+def test_eval_summary_rerank_rate_mixed():
+    logs = [_make_log(reranked=True), _make_log(reranked=False), _make_log(reranked=False)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == round(1 / 3, 4)
+
+
+def test_eval_summary_rerank_rate_null_treated_as_not_reranked():
+    logs = [_make_log(reranked=None), _make_log(reranked=True)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == 0.5
+
+
+def test_eval_summary_rerank_rate_single_reranked_query():
+    logs = [_make_log(reranked=True)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == 1.0
+
+
+def test_eval_summary_rerank_rate_is_bounded():
+    logs = [_make_log(reranked=True), _make_log(reranked=False)]
+    r = _summary_with_logs(logs)
+    rate = r.json()["rerank_rate"]
+    assert 0.0 <= rate <= 1.0
+
+
+def test_eval_summary_rerank_rate_rounded_to_four_decimals():
+    logs = [_make_log(reranked=True)] + [_make_log(reranked=False)] * 2
+    r = _summary_with_logs(logs)
+    rate = r.json()["rerank_rate"]
+    assert rate == round(1 / 3, 4)
+
+
 # ── /query (POST) core behavior unit tests ───────────────────
 
 def test_query_empty_index_returns_400():
