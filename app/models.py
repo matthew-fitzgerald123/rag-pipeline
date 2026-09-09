@@ -20,6 +20,7 @@ class QueryLog(Base):
     query         = Column(Text, nullable=False)
     answer        = Column(Text, nullable=False)
     retrieved_ids = Column(JSON, default=[])
+    top_k         = Column(Integer, nullable=True)
     hit_rate      = Column(Float, nullable=True)
     mrr           = Column(Float, nullable=True)
     ndcg          = Column(Float, nullable=True)

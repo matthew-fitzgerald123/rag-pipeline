@@ -1996,6 +1996,7 @@ def _make_log(**kwargs):
     defaults = dict(
         query="What is ML?",
         answer="Machine learning is a field of AI.",
+        top_k=None,
         faithfulness=None,
         answer_relevance=None,
         hit_rate=None,
@@ -2366,7 +2367,7 @@ def test_eval_history_has_all_required_fields():
     log = _make_log(faithfulness=0.7, hit_rate=1.0, mrr=0.5, ndcg=0.8, answer_relevance=0.6)
     r = _history_with_logs([log])
     row = r.json()[0]
-    for field in ("query", "answer", "faithfulness", "answer_relevance", "hit_rate", "mrr", "ndcg", "created_at"):
+    for field in ("query", "answer", "top_k", "faithfulness", "answer_relevance", "hit_rate", "mrr", "ndcg", "created_at"):
         assert field in row, f"missing field: {field}"
 
 
@@ -2426,3 +2427,112 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── /eval/history top_k field unit tests ──────────────────────
+
+def test_eval_history_includes_top_k_field():
+    log = _make_log(top_k=5)
+    r = _history_with_logs([log])
+    assert "top_k" in r.json()[0]
+
+
+def test_eval_history_top_k_value_matches_logged_value():
+    log = _make_log(top_k=10)
+    r = _history_with_logs([log])
+    assert r.json()[0]["top_k"] == 10
+
+
+def test_eval_history_top_k_can_be_null():
+    log = _make_log(top_k=None)
+    r = _history_with_logs([log])
+    assert r.json()[0]["top_k"] is None
+
+
+def test_eval_history_top_k_default_five():
+    log = _make_log(top_k=5)
+    r = _history_with_logs([log])
+    assert r.json()[0]["top_k"] == 5
+
+
+def test_eval_history_top_k_is_integer_when_set():
+    log = _make_log(top_k=3)
+    r = _history_with_logs([log])
+    assert isinstance(r.json()[0]["top_k"], int)
+
+
+# ── /query stores top_k in DB unit tests ─────────────────────
+
+def test_query_stores_top_k_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            client.post("/query", json={"query": "supervised learning", "top_k": 7})
+    finally:
+        app.dependency_overrides.clear()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.top_k == 7
+
+
+def test_query_stores_default_top_k_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            client.post("/query", json={"query": "supervised learning"})
+    finally:
+        app.dependency_overrides.clear()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.top_k == 5
+
+
+def test_query_eval_stores_top_k_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.query.return_value = _EVAL_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            client.post("/query/eval", json={
+                "query": "supervised learning",
+                "relevant_doc_ids": ["c1"],
+                "top_k": 4,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.top_k == 4
+
+
+def test_stream_stores_top_k_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    _override_db(mock_db)
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _fake_stream_tokens
+            client.post("/query/stream", json={"query": "What is ML?", "top_k": 6})
+    finally:
+        _clear_overrides()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.top_k == 6
