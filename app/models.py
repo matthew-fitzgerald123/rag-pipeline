@@ -1,5 +1,5 @@
 from __future__ import annotations
-from sqlalchemy import Column, String, DateTime, JSON, Integer, Float, Text
+from sqlalchemy import Column, String, DateTime, JSON, Integer, Float, Text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
@@ -26,4 +26,5 @@ class QueryLog(Base):
     ndcg          = Column(Float, nullable=True)
     faithfulness      = Column(Float, nullable=True)
     answer_relevance  = Column(Float, nullable=True)
+    reranked          = Column(Boolean, nullable=True)
     created_at        = Column(DateTime, default=datetime.utcnow, index=True)
