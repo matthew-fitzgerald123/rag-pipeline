@@ -24,6 +24,8 @@ try:
     with engine.connect() as _conn:
         _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS ndcg FLOAT"))
         _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS answer_relevance FLOAT"))
+        _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS top_k INTEGER"))
+        _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS reranked BOOLEAN"))
         _conn.commit()
 except Exception:
     pass
@@ -69,8 +71,10 @@ def query(req: QueryReq, db: Session = Depends(get_db)):
         query=req.query,
         answer=answer,
         retrieved_ids=[c["chunk_id"] for c in chunks],
+        top_k=req.top_k,
         faithfulness=faithfulness(answer, chunks),
         answer_relevance=ar,
+        reranked=req.rerank,
     )
     db.add(log)
     db.commit()
@@ -113,8 +117,10 @@ async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
             query=req.query,
             answer=full_answer or "(empty stream)",
             retrieved_ids=[c["chunk_id"] for c in chunks],
+            top_k=req.top_k,
             faithfulness=faithfulness(full_answer, chunks) if full_answer else None,
             answer_relevance=answer_relevance(req.query, full_answer) if full_answer else None,
+            reranked=req.rerank,
         )
         db.add(log)
         db.commit()
@@ -143,11 +149,13 @@ def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
         query=req.query,
         answer=answer,
         retrieved_ids=retrieved_ids,
+        top_k=req.top_k,
         hit_rate=hr,
         mrr=mrr,
         ndcg=ndcg,
         faithfulness=f,
         answer_relevance=ar,
+        reranked=req.rerank,
     )
     db.add(log)
     db.commit()
@@ -202,6 +210,8 @@ def eval_history(limit: int = 20, db: Session = Depends(get_db)):
         {
             "query":            l.query,
             "answer":           l.answer[:200] + "..." if len(l.answer) > 200 else l.answer,
+            "top_k":            l.top_k,
+            "reranked":         l.reranked,
             "faithfulness":     l.faithfulness,
             "answer_relevance": l.answer_relevance,
             "hit_rate":         l.hit_rate,
