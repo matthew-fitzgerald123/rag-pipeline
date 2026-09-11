@@ -1997,6 +1997,7 @@ def _make_log(**kwargs):
         query="What is ML?",
         answer="Machine learning is a field of AI.",
         top_k=None,
+        reranked=None,
         faithfulness=None,
         answer_relevance=None,
         hit_rate=None,
@@ -2744,3 +2745,146 @@ def test_eval_history_reranked_can_be_null():
     rows = r.json()
     assert "reranked" in rows[0]
     assert rows[0]["reranked"] is None
+
+
+# ── /eval/summary rerank insight unit tests ───────────────────
+
+def test_eval_summary_rerank_rate_computed():
+    logs = [
+        _make_log(reranked=True),
+        _make_log(reranked=True),
+        _make_log(reranked=False),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == round(2 / 3, 4)
+
+
+def test_eval_summary_rerank_rate_all_true():
+    logs = [_make_log(reranked=True), _make_log(reranked=True)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == 1.0
+
+
+def test_eval_summary_rerank_rate_all_false():
+    logs = [_make_log(reranked=False), _make_log(reranked=False)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == 0.0
+
+
+def test_eval_summary_rerank_rate_excludes_none_reranked():
+    logs = [
+        _make_log(reranked=True),
+        _make_log(reranked=None),
+        _make_log(reranked=None),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == 1.0
+
+
+def test_eval_summary_rerank_rate_all_none_is_none():
+    logs = [_make_log(reranked=None), _make_log(reranked=None)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] is None
+
+
+def test_eval_summary_rerank_rate_single_reranked():
+    logs = [_make_log(reranked=True)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == 1.0
+
+
+def test_eval_summary_rerank_rate_single_not_reranked():
+    logs = [_make_log(reranked=False)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == 0.0
+
+
+def test_eval_summary_avg_top_k_computed():
+    logs = [_make_log(top_k=5), _make_log(top_k=3)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_top_k"] == round((5 + 3) / 2, 4)
+
+
+def test_eval_summary_avg_top_k_excludes_none():
+    logs = [_make_log(top_k=10), _make_log(top_k=None)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_top_k"] == 10.0
+
+
+def test_eval_summary_avg_top_k_all_none_returns_none():
+    logs = [_make_log(top_k=None), _make_log(top_k=None)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_top_k"] is None
+
+
+def test_eval_summary_avg_top_k_single_value():
+    logs = [_make_log(top_k=7)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_top_k"] == 7.0
+
+
+def test_eval_summary_reranked_avg_faithfulness_computed():
+    logs = [
+        _make_log(reranked=True, faithfulness=0.9),
+        _make_log(reranked=True, faithfulness=0.7),
+        _make_log(reranked=False, faithfulness=0.3),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["reranked_avg_faithfulness"] == round((0.9 + 0.7) / 2, 4)
+
+
+def test_eval_summary_non_reranked_avg_faithfulness_computed():
+    logs = [
+        _make_log(reranked=True, faithfulness=0.9),
+        _make_log(reranked=False, faithfulness=0.4),
+        _make_log(reranked=False, faithfulness=0.6),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["non_reranked_avg_faithfulness"] == round((0.4 + 0.6) / 2, 4)
+
+
+def test_eval_summary_reranked_avg_faithfulness_none_when_no_reranked_queries():
+    logs = [_make_log(reranked=False, faithfulness=0.8)]
+    r = _summary_with_logs(logs)
+    assert r.json()["reranked_avg_faithfulness"] is None
+
+
+def test_eval_summary_non_reranked_avg_faithfulness_none_when_no_non_reranked_queries():
+    logs = [_make_log(reranked=True, faithfulness=0.8)]
+    r = _summary_with_logs(logs)
+    assert r.json()["non_reranked_avg_faithfulness"] is None
+
+
+def test_eval_summary_reranked_avg_faithfulness_excludes_none_faithfulness():
+    logs = [
+        _make_log(reranked=True, faithfulness=0.8),
+        _make_log(reranked=True, faithfulness=None),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["reranked_avg_faithfulness"] == 0.8
+
+
+def test_eval_summary_non_reranked_avg_faithfulness_excludes_none_faithfulness():
+    logs = [
+        _make_log(reranked=False, faithfulness=0.6),
+        _make_log(reranked=False, faithfulness=None),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["non_reranked_avg_faithfulness"] == 0.6
+
+
+def test_eval_summary_includes_all_new_insight_fields():
+    logs = [_make_log(reranked=True, top_k=5, faithfulness=0.8)]
+    r = _summary_with_logs(logs)
+    data = r.json()
+    for field in ("avg_top_k", "rerank_rate", "reranked_avg_faithfulness", "non_reranked_avg_faithfulness"):
+        assert field in data, f"missing insight field: {field}"
+
+
+def test_eval_summary_rerank_none_logs_dont_affect_faithfulness_breakdowns():
+    logs = [
+        _make_log(reranked=None, faithfulness=0.99),
+        _make_log(reranked=True, faithfulness=0.5),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["reranked_avg_faithfulness"] == 0.5
