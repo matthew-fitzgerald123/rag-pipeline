@@ -24,6 +24,8 @@ try:
     with engine.connect() as _conn:
         _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS ndcg FLOAT"))
         _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS answer_relevance FLOAT"))
+        _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS top_k INTEGER"))
+        _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS reranked BOOLEAN"))
         _conn.commit()
 except Exception:
     pass
@@ -69,6 +71,8 @@ def query(req: QueryReq, db: Session = Depends(get_db)):
         query=req.query,
         answer=answer,
         retrieved_ids=[c["chunk_id"] for c in chunks],
+        top_k=req.top_k,
+        reranked=req.rerank,
         faithfulness=faithfulness(answer, chunks),
         answer_relevance=ar,
     )
@@ -113,6 +117,8 @@ async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
             query=req.query,
             answer=full_answer or "(empty stream)",
             retrieved_ids=[c["chunk_id"] for c in chunks],
+            top_k=req.top_k,
+            reranked=req.rerank,
             faithfulness=faithfulness(full_answer, chunks) if full_answer else None,
             answer_relevance=answer_relevance(req.query, full_answer) if full_answer else None,
         )
@@ -143,6 +149,8 @@ def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
         query=req.query,
         answer=answer,
         retrieved_ids=retrieved_ids,
+        top_k=req.top_k,
+        reranked=req.rerank,
         hit_rate=hr,
         mrr=mrr,
         ndcg=ndcg,

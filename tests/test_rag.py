@@ -1988,6 +1988,142 @@ def test_query_eval_commits_to_db():
     mock_db.commit.assert_called_once()
 
 
+# ── top_k and reranked DB persistence unit tests ─────────────
+
+
+def test_query_stores_top_k_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            client.post("/query", json={"query": "supervised learning", "top_k": 7})
+    finally:
+        app.dependency_overrides.clear()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.top_k == 7
+
+
+def test_query_stores_reranked_false_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            client.post("/query", json={"query": "supervised learning", "top_k": 3, "rerank": False})
+    finally:
+        app.dependency_overrides.clear()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.reranked is False
+
+
+def test_query_stores_reranked_true_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen, \
+             patch("app.main.rerank") as mock_rerank:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_rerank.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            client.post("/query", json={"query": "supervised learning", "top_k": 3, "rerank": True})
+    finally:
+        app.dependency_overrides.clear()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.reranked is True
+
+
+def test_stream_stores_top_k_in_db():
+    from unittest.mock import patch, MagicMock
+    mock_db = MagicMock()
+    _override_db(mock_db)
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _fake_stream_tokens
+            client.post("/query/stream", json={"query": "supervised learning", "top_k": 4})
+    finally:
+        _clear_overrides()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.top_k == 4
+
+
+def test_stream_stores_reranked_in_db():
+    from unittest.mock import patch, MagicMock
+    mock_db = MagicMock()
+    _override_db(mock_db)
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _fake_stream_tokens
+            client.post("/query/stream", json={"query": "q", "top_k": 3, "rerank": False})
+    finally:
+        _clear_overrides()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.reranked is False
+
+
+def test_query_eval_stores_top_k_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.query.return_value = _EVAL_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            client.post("/query/eval", json={
+                "query": "supervised learning",
+                "relevant_doc_ids": ["c1"],
+                "top_k": 6,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.top_k == 6
+
+
+def test_query_eval_stores_reranked_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.query.return_value = _EVAL_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            client.post("/query/eval", json={
+                "query": "supervised learning",
+                "relevant_doc_ids": ["c1"],
+                "top_k": 1,
+                "rerank": False,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.reranked is False
+
+
 # ── /eval/summary unit tests ──────────────────────────────────
 
 import datetime as _dt
