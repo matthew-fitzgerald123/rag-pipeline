@@ -24,6 +24,8 @@ try:
     with engine.connect() as _conn:
         _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS ndcg FLOAT"))
         _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS answer_relevance FLOAT"))
+        _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS top_k INTEGER"))
+        _conn.execute(text("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS reranked BOOLEAN"))
         _conn.commit()
 except Exception:
     pass
@@ -69,6 +71,8 @@ def query(req: QueryReq, db: Session = Depends(get_db)):
         query=req.query,
         answer=answer,
         retrieved_ids=[c["chunk_id"] for c in chunks],
+        top_k=req.top_k,
+        reranked=req.rerank,
         faithfulness=faithfulness(answer, chunks),
         answer_relevance=ar,
     )
@@ -113,6 +117,8 @@ async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
             query=req.query,
             answer=full_answer or "(empty stream)",
             retrieved_ids=[c["chunk_id"] for c in chunks],
+            top_k=req.top_k,
+            reranked=req.rerank,
             faithfulness=faithfulness(full_answer, chunks) if full_answer else None,
             answer_relevance=answer_relevance(req.query, full_answer) if full_answer else None,
         )
@@ -143,6 +149,8 @@ def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
         query=req.query,
         answer=answer,
         retrieved_ids=retrieved_ids,
+        top_k=req.top_k,
+        reranked=req.rerank,
         hit_rate=hr,
         mrr=mrr,
         ndcg=ndcg,
@@ -177,17 +185,36 @@ def eval_summary(db: Session = Depends(get_db)):
         vals = [v for v in vals if v is not None]
         return round(sum(vals) / len(vals), 4) if vals else None
 
+    known_rerank  = [l for l in logs if l.reranked is not None]
+    rerank_rate   = (
+        round(sum(1 for l in known_rerank if l.reranked) / len(known_rerank), 4)
+        if known_rerank else None
+    )
+    reranked_logs     = [l for l in logs if l.reranked is True]
+    non_reranked_logs = [l for l in logs if l.reranked is False]
+    avg_top_k = avg([l.top_k for l in logs])
+
     return {
-        "total_queries":        len(logs),
-        "avg_faithfulness":     avg([l.faithfulness for l in logs]),
-        "avg_hit_rate":         avg([l.hit_rate for l in logs]),
-        "avg_mrr":              avg([l.mrr for l in logs]),
-        "avg_ndcg":             avg([l.ndcg for l in logs]),
-        "avg_answer_relevance": avg([
+        "total_queries":                     len(logs),
+        "avg_faithfulness":                  avg([l.faithfulness for l in logs]),
+        "avg_hit_rate":                      avg([l.hit_rate for l in logs]),
+        "avg_mrr":                           avg([l.mrr for l in logs]),
+        "avg_ndcg":                          avg([l.ndcg for l in logs]),
+        "avg_answer_relevance":              avg([
             l.answer_relevance if l.answer_relevance is not None
             else answer_relevance(l.query, l.answer)
             for l in logs
         ]),
+        "avg_top_k":                         avg_top_k,
+        "rerank_rate":                       rerank_rate,
+        "reranked_avg_faithfulness":         avg([l.faithfulness for l in reranked_logs]),
+        "non_reranked_avg_faithfulness":     avg([l.faithfulness for l in non_reranked_logs]),
+        "reranked_avg_ndcg":                 avg([l.ndcg for l in reranked_logs]),
+        "non_reranked_avg_ndcg":             avg([l.ndcg for l in non_reranked_logs]),
+        "reranked_avg_mrr":                  avg([l.mrr for l in reranked_logs]),
+        "non_reranked_avg_mrr":              avg([l.mrr for l in non_reranked_logs]),
+        "reranked_avg_hit_rate":             avg([l.hit_rate for l in reranked_logs]),
+        "non_reranked_avg_hit_rate":         avg([l.hit_rate for l in non_reranked_logs]),
     }
 
 @app.get("/eval/history", tags=["monitoring"])
@@ -202,6 +229,8 @@ def eval_history(limit: int = 20, db: Session = Depends(get_db)):
         {
             "query":            l.query,
             "answer":           l.answer[:200] + "..." if len(l.answer) > 200 else l.answer,
+            "top_k":            l.top_k,
+            "reranked":         l.reranked,
             "faithfulness":     l.faithfulness,
             "answer_relevance": l.answer_relevance,
             "hit_rate":         l.hit_rate,
