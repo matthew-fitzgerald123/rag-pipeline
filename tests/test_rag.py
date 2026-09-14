@@ -1231,12 +1231,120 @@ def test_stream_token_events_are_json_with_token_key():
         r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
     token_lines = [
         line for line in r.text.split("\n")
-        if line.startswith("data: ") and line.strip() != "data: [DONE]"
+        if line.startswith("data: ")
+        and line.strip() != "data: [DONE]"
+        and '"token"' in line
     ]
     assert len(token_lines) == 2
     for line in token_lines:
         parsed = _json.loads(line[len("data: "):])
         assert "token" in parsed
+
+
+def test_stream_emits_summary_event_before_done():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    data_lines = [l.strip() for l in r.text.split("\n") if l.strip().startswith("data:")]
+    summary_idx = next((i for i, l in enumerate(data_lines) if '"summary"' in l), None)
+    done_idx = next((i for i, l in enumerate(data_lines) if l == "data: [DONE]"), None)
+    assert summary_idx is not None, "no summary event found"
+    assert done_idx is not None, "no [DONE] sentinel found"
+    assert summary_idx < done_idx
+
+
+def test_stream_summary_event_is_valid_json():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    summary_lines = [
+        l for l in r.text.split("\n")
+        if l.startswith("data: ") and '"summary"' in l
+    ]
+    assert len(summary_lines) == 1
+    parsed = _json.loads(summary_lines[0][len("data: "):])
+    assert parsed["event"] == "summary"
+
+
+def test_stream_summary_event_has_eval_field():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    summary_lines = [l for l in r.text.split("\n") if l.startswith("data: ") and '"summary"' in l]
+    parsed = _json.loads(summary_lines[0][len("data: "):])
+    assert "eval" in parsed
+
+
+def test_stream_summary_eval_has_faithfulness():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    summary_lines = [l for l in r.text.split("\n") if l.startswith("data: ") and '"summary"' in l]
+    parsed = _json.loads(summary_lines[0][len("data: "):])
+    assert "faithfulness" in parsed["eval"]
+
+
+def test_stream_summary_eval_has_answer_relevance():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    summary_lines = [l for l in r.text.split("\n") if l.startswith("data: ") and '"summary"' in l]
+    parsed = _json.loads(summary_lines[0][len("data: "):])
+    assert "answer_relevance" in parsed["eval"]
+
+
+def test_stream_summary_eval_metrics_are_bounded():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "supervised learning", "top_k": 3})
+    summary_lines = [l for l in r.text.split("\n") if l.startswith("data: ") and '"summary"' in l]
+    parsed = _json.loads(summary_lines[0][len("data: "):])
+    for key, val in parsed["eval"].items():
+        if val is not None:
+            assert 0.0 <= val <= 1.0, f"{key}={val} out of [0, 1]"
+
+
+def test_stream_summary_eval_null_when_empty_tokens():
+    from unittest.mock import patch
+
+    async def _empty_stream_3(query, chunks, max_tokens=512):
+        yield "[DONE]"
+
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _empty_stream_3
+        r = client.post("/query/stream", json={"query": "q", "top_k": 3})
+    summary_lines = [l for l in r.text.split("\n") if l.startswith("data: ") and '"summary"' in l]
+    assert len(summary_lines) == 1
+    parsed = _json.loads(summary_lines[0][len("data: "):])
+    assert parsed["eval"]["faithfulness"] is None
+    assert parsed["eval"]["answer_relevance"] is None
 
 
 def test_stream_calls_reranker_when_rerank_true():
@@ -1579,6 +1687,8 @@ def test_eval_history_includes_answer_relevance_field():
     mock_log = MagicMock(spec=QL)
     mock_log.query = "What is ML?"
     mock_log.answer = "Machine learning is a field of AI."
+    mock_log.top_k = 5
+    mock_log.reranked = False
     mock_log.faithfulness = 0.8
     mock_log.answer_relevance = 0.75
     mock_log.hit_rate = None
@@ -1606,6 +1716,8 @@ def test_eval_history_answer_relevance_can_be_null():
     mock_log = MagicMock(spec=QL)
     mock_log.query = "What is ML?"
     mock_log.answer = "Machine learning is a field of AI."
+    mock_log.top_k = None
+    mock_log.reranked = None
     mock_log.faithfulness = None
     mock_log.answer_relevance = None
     mock_log.hit_rate = None
@@ -1984,6 +2096,142 @@ def test_query_eval_commits_to_db():
     mock_db.commit.assert_called_once()
 
 
+# ── top_k and reranked DB persistence unit tests ─────────────
+
+
+def test_query_stores_top_k_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            client.post("/query", json={"query": "supervised learning", "top_k": 7})
+    finally:
+        app.dependency_overrides.clear()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.top_k == 7
+
+
+def test_query_stores_reranked_false_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            client.post("/query", json={"query": "supervised learning", "top_k": 3, "rerank": False})
+    finally:
+        app.dependency_overrides.clear()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.reranked is False
+
+
+def test_query_stores_reranked_true_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen, \
+             patch("app.main.rerank") as mock_rerank:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_rerank.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            client.post("/query", json={"query": "supervised learning", "top_k": 3, "rerank": True})
+    finally:
+        app.dependency_overrides.clear()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.reranked is True
+
+
+def test_stream_stores_top_k_in_db():
+    from unittest.mock import patch, MagicMock
+    mock_db = MagicMock()
+    _override_db(mock_db)
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _fake_stream_tokens
+            client.post("/query/stream", json={"query": "supervised learning", "top_k": 4})
+    finally:
+        _clear_overrides()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.top_k == 4
+
+
+def test_stream_stores_reranked_in_db():
+    from unittest.mock import patch, MagicMock
+    mock_db = MagicMock()
+    _override_db(mock_db)
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _fake_stream_tokens
+            client.post("/query/stream", json={"query": "q", "top_k": 3, "rerank": False})
+    finally:
+        _clear_overrides()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.reranked is False
+
+
+def test_query_eval_stores_top_k_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.query.return_value = _EVAL_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            client.post("/query/eval", json={
+                "query": "supervised learning",
+                "relevant_doc_ids": ["c1"],
+                "top_k": 6,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.top_k == 6
+
+
+def test_query_eval_stores_reranked_in_db():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.query.return_value = _EVAL_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            client.post("/query/eval", json={
+                "query": "supervised learning",
+                "relevant_doc_ids": ["c1"],
+                "top_k": 1,
+                "rerank": False,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    log_obj = mock_db.add.call_args[0][0]
+    assert log_obj.reranked is False
+
+
 # ── /eval/summary unit tests ──────────────────────────────────
 
 import datetime as _dt
@@ -1996,6 +2244,8 @@ def _make_log(**kwargs):
     defaults = dict(
         query="What is ML?",
         answer="Machine learning is a field of AI.",
+        top_k=None,
+        reranked=None,
         faithfulness=None,
         answer_relevance=None,
         hit_rate=None,
@@ -2426,3 +2676,253 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── /eval/history top_k and reranked field tests ─────────────
+
+def test_eval_history_includes_top_k_field():
+    log = _make_log(top_k=5)
+    r = _history_with_logs([log])
+    assert "top_k" in r.json()[0]
+
+
+def test_eval_history_top_k_value_matches_logged_value():
+    log = _make_log(top_k=10)
+    r = _history_with_logs([log])
+    assert r.json()[0]["top_k"] == 10
+
+
+def test_eval_history_top_k_can_be_null():
+    log = _make_log(top_k=None)
+    r = _history_with_logs([log])
+    assert r.json()[0]["top_k"] is None
+
+
+def test_eval_history_includes_reranked_field():
+    log = _make_log(reranked=True)
+    r = _history_with_logs([log])
+    assert "reranked" in r.json()[0]
+    assert r.json()[0]["reranked"] is True
+
+
+def test_eval_history_reranked_false_when_not_reranked():
+    log = _make_log(reranked=False)
+    r = _history_with_logs([log])
+    assert r.json()[0]["reranked"] is False
+
+
+def test_eval_history_reranked_can_be_null():
+    log = _make_log(reranked=None)
+    r = _history_with_logs([log])
+    assert r.json()[0]["reranked"] is None
+
+
+# ── /eval/summary rerank insight unit tests ───────────────────
+
+def test_eval_summary_rerank_rate_computed():
+    logs = [_make_log(reranked=True), _make_log(reranked=True), _make_log(reranked=False)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == round(2 / 3, 4)
+
+
+def test_eval_summary_rerank_rate_all_true():
+    logs = [_make_log(reranked=True), _make_log(reranked=True)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == 1.0
+
+
+def test_eval_summary_rerank_rate_all_false():
+    logs = [_make_log(reranked=False), _make_log(reranked=False)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == 0.0
+
+
+def test_eval_summary_rerank_rate_excludes_none_reranked():
+    logs = [_make_log(reranked=True), _make_log(reranked=None)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] == 1.0
+
+
+def test_eval_summary_rerank_rate_all_none_is_none():
+    logs = [_make_log(reranked=None), _make_log(reranked=None)]
+    r = _summary_with_logs(logs)
+    assert r.json()["rerank_rate"] is None
+
+
+def test_eval_summary_avg_top_k_computed():
+    logs = [_make_log(top_k=5), _make_log(top_k=3)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_top_k"] == round((5 + 3) / 2, 4)
+
+
+def test_eval_summary_avg_top_k_excludes_none():
+    logs = [_make_log(top_k=10), _make_log(top_k=None)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_top_k"] == 10.0
+
+
+def test_eval_summary_avg_top_k_all_none_returns_none():
+    logs = [_make_log(top_k=None), _make_log(top_k=None)]
+    r = _summary_with_logs(logs)
+    assert r.json()["avg_top_k"] is None
+
+
+def test_eval_summary_reranked_avg_faithfulness_computed():
+    logs = [
+        _make_log(reranked=True, faithfulness=0.9),
+        _make_log(reranked=True, faithfulness=0.7),
+        _make_log(reranked=False, faithfulness=0.3),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["reranked_avg_faithfulness"] == round((0.9 + 0.7) / 2, 4)
+
+
+def test_eval_summary_non_reranked_avg_faithfulness_computed():
+    logs = [
+        _make_log(reranked=True, faithfulness=0.9),
+        _make_log(reranked=False, faithfulness=0.4),
+        _make_log(reranked=False, faithfulness=0.6),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["non_reranked_avg_faithfulness"] == round((0.4 + 0.6) / 2, 4)
+
+
+def test_eval_summary_reranked_avg_faithfulness_none_when_no_reranked():
+    logs = [_make_log(reranked=False, faithfulness=0.8)]
+    r = _summary_with_logs(logs)
+    assert r.json()["reranked_avg_faithfulness"] is None
+
+
+def test_eval_summary_non_reranked_avg_faithfulness_none_when_no_non_reranked():
+    logs = [_make_log(reranked=True, faithfulness=0.8)]
+    r = _summary_with_logs(logs)
+    assert r.json()["non_reranked_avg_faithfulness"] is None
+
+
+def test_eval_summary_reranked_avg_ndcg_computed():
+    logs = [
+        _make_log(reranked=True, ndcg=1.0),
+        _make_log(reranked=True, ndcg=0.6),
+        _make_log(reranked=False, ndcg=0.3),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["reranked_avg_ndcg"] == round((1.0 + 0.6) / 2, 4)
+
+
+def test_eval_summary_non_reranked_avg_ndcg_computed():
+    logs = [
+        _make_log(reranked=True, ndcg=1.0),
+        _make_log(reranked=False, ndcg=0.4),
+        _make_log(reranked=False, ndcg=0.6),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["non_reranked_avg_ndcg"] == round((0.4 + 0.6) / 2, 4)
+
+
+def test_eval_summary_reranked_avg_ndcg_none_when_no_reranked():
+    logs = [_make_log(reranked=False, ndcg=0.8)]
+    r = _summary_with_logs(logs)
+    assert r.json()["reranked_avg_ndcg"] is None
+
+
+def test_eval_summary_non_reranked_avg_ndcg_none_when_no_non_reranked():
+    logs = [_make_log(reranked=True, ndcg=0.8)]
+    r = _summary_with_logs(logs)
+    assert r.json()["non_reranked_avg_ndcg"] is None
+
+
+def test_eval_summary_reranked_avg_ndcg_excludes_none_ndcg():
+    logs = [_make_log(reranked=True, ndcg=0.9), _make_log(reranked=True, ndcg=None)]
+    r = _summary_with_logs(logs)
+    assert r.json()["reranked_avg_ndcg"] == 0.9
+
+
+def test_eval_summary_reranked_avg_mrr_computed():
+    logs = [
+        _make_log(reranked=True, mrr=1.0),
+        _make_log(reranked=True, mrr=0.5),
+        _make_log(reranked=False, mrr=0.2),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["reranked_avg_mrr"] == round((1.0 + 0.5) / 2, 4)
+
+
+def test_eval_summary_non_reranked_avg_mrr_computed():
+    logs = [
+        _make_log(reranked=True, mrr=1.0),
+        _make_log(reranked=False, mrr=0.3333),
+        _make_log(reranked=False, mrr=0.5),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["non_reranked_avg_mrr"] == round((0.3333 + 0.5) / 2, 4)
+
+
+def test_eval_summary_reranked_avg_mrr_none_when_no_reranked():
+    logs = [_make_log(reranked=False, mrr=0.5)]
+    r = _summary_with_logs(logs)
+    assert r.json()["reranked_avg_mrr"] is None
+
+
+def test_eval_summary_non_reranked_avg_mrr_none_when_no_non_reranked():
+    logs = [_make_log(reranked=True, mrr=1.0)]
+    r = _summary_with_logs(logs)
+    assert r.json()["non_reranked_avg_mrr"] is None
+
+
+def test_eval_summary_reranked_avg_hit_rate_computed():
+    logs = [
+        _make_log(reranked=True, hit_rate=1.0),
+        _make_log(reranked=True, hit_rate=0.5),
+        _make_log(reranked=False, hit_rate=0.0),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["reranked_avg_hit_rate"] == round((1.0 + 0.5) / 2, 4)
+
+
+def test_eval_summary_non_reranked_avg_hit_rate_computed():
+    logs = [
+        _make_log(reranked=True, hit_rate=1.0),
+        _make_log(reranked=False, hit_rate=0.25),
+        _make_log(reranked=False, hit_rate=0.75),
+    ]
+    r = _summary_with_logs(logs)
+    assert r.json()["non_reranked_avg_hit_rate"] == round((0.25 + 0.75) / 2, 4)
+
+
+def test_eval_summary_reranked_avg_hit_rate_none_when_no_reranked():
+    logs = [_make_log(reranked=False, hit_rate=1.0)]
+    r = _summary_with_logs(logs)
+    assert r.json()["reranked_avg_hit_rate"] is None
+
+
+def test_eval_summary_non_reranked_avg_hit_rate_none_when_no_non_reranked():
+    logs = [_make_log(reranked=True, hit_rate=1.0)]
+    r = _summary_with_logs(logs)
+    assert r.json()["non_reranked_avg_hit_rate"] is None
+
+
+def test_eval_summary_includes_all_rerank_insight_fields():
+    logs = [_make_log(reranked=True, top_k=5, faithfulness=0.8, ndcg=0.9, mrr=1.0, hit_rate=1.0)]
+    r = _summary_with_logs(logs)
+    data = r.json()
+    for field in (
+        "avg_top_k", "rerank_rate",
+        "reranked_avg_faithfulness", "non_reranked_avg_faithfulness",
+        "reranked_avg_ndcg", "non_reranked_avg_ndcg",
+        "reranked_avg_mrr", "non_reranked_avg_mrr",
+        "reranked_avg_hit_rate", "non_reranked_avg_hit_rate",
+    ):
+        assert field in data, f"missing insight field: {field}"
+
+
+def test_eval_summary_rerank_none_logs_excluded_from_breakdowns():
+    logs = [
+        _make_log(reranked=None, faithfulness=0.99, ndcg=0.99, mrr=0.99, hit_rate=0.99),
+        _make_log(reranked=True, faithfulness=0.5, ndcg=0.6, mrr=0.7, hit_rate=0.8),
+    ]
+    r = _summary_with_logs(logs)
+    data = r.json()
+    assert data["reranked_avg_faithfulness"] == 0.5
+    assert data["reranked_avg_ndcg"] == 0.6
+    assert data["reranked_avg_mrr"] == 0.7
+    assert data["reranked_avg_hit_rate"] == 0.8
