@@ -106,24 +106,29 @@ async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
     async def event_generator() -> AsyncIterator[str]:
         token_parts: list[str] = []
         async for payload in generator.answer_stream(req.query, chunks):
+            if payload == "[DONE]":
+                full_answer = "".join(token_parts)
+                faith = faithfulness(full_answer, chunks) if full_answer else None
+                ar = answer_relevance(req.query, full_answer) if full_answer else None
+                log = QueryLog(
+                    query=req.query,
+                    answer=full_answer or "(empty stream)",
+                    retrieved_ids=[c["chunk_id"] for c in chunks],
+                    top_k=req.top_k,
+                    reranked=req.rerank,
+                    faithfulness=faith,
+                    answer_relevance=ar,
+                )
+                db.add(log)
+                db.commit()
+                summary = {"event": "summary", "eval": {"faithfulness": faith, "answer_relevance": ar}}
+                yield f"data: {json.dumps(summary)}\n\n"
             yield f"data: {payload}\n\n"
             if payload != "[DONE]":
                 try:
                     token_parts.append(json.loads(payload)["token"])
                 except (json.JSONDecodeError, KeyError):
                     pass
-        full_answer = "".join(token_parts)
-        log = QueryLog(
-            query=req.query,
-            answer=full_answer or "(empty stream)",
-            retrieved_ids=[c["chunk_id"] for c in chunks],
-            top_k=req.top_k,
-            reranked=req.rerank,
-            faithfulness=faithfulness(full_answer, chunks) if full_answer else None,
-            answer_relevance=answer_relevance(req.query, full_answer) if full_answer else None,
-        )
-        db.add(log)
-        db.commit()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

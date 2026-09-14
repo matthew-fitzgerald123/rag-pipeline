@@ -1231,12 +1231,120 @@ def test_stream_token_events_are_json_with_token_key():
         r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
     token_lines = [
         line for line in r.text.split("\n")
-        if line.startswith("data: ") and line.strip() != "data: [DONE]"
+        if line.startswith("data: ")
+        and line.strip() != "data: [DONE]"
+        and '"token"' in line
     ]
     assert len(token_lines) == 2
     for line in token_lines:
         parsed = _json.loads(line[len("data: "):])
         assert "token" in parsed
+
+
+def test_stream_emits_summary_event_before_done():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    data_lines = [l.strip() for l in r.text.split("\n") if l.strip().startswith("data:")]
+    summary_idx = next((i for i, l in enumerate(data_lines) if '"summary"' in l), None)
+    done_idx = next((i for i, l in enumerate(data_lines) if l == "data: [DONE]"), None)
+    assert summary_idx is not None, "no summary event found"
+    assert done_idx is not None, "no [DONE] sentinel found"
+    assert summary_idx < done_idx
+
+
+def test_stream_summary_event_is_valid_json():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    summary_lines = [
+        l for l in r.text.split("\n")
+        if l.startswith("data: ") and '"summary"' in l
+    ]
+    assert len(summary_lines) == 1
+    parsed = _json.loads(summary_lines[0][len("data: "):])
+    assert parsed["event"] == "summary"
+
+
+def test_stream_summary_event_has_eval_field():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    summary_lines = [l for l in r.text.split("\n") if l.startswith("data: ") and '"summary"' in l]
+    parsed = _json.loads(summary_lines[0][len("data: "):])
+    assert "eval" in parsed
+
+
+def test_stream_summary_eval_has_faithfulness():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    summary_lines = [l for l in r.text.split("\n") if l.startswith("data: ") and '"summary"' in l]
+    parsed = _json.loads(summary_lines[0][len("data: "):])
+    assert "faithfulness" in parsed["eval"]
+
+
+def test_stream_summary_eval_has_answer_relevance():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    summary_lines = [l for l in r.text.split("\n") if l.startswith("data: ") and '"summary"' in l]
+    parsed = _json.loads(summary_lines[0][len("data: "):])
+    assert "answer_relevance" in parsed["eval"]
+
+
+def test_stream_summary_eval_metrics_are_bounded():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "supervised learning", "top_k": 3})
+    summary_lines = [l for l in r.text.split("\n") if l.startswith("data: ") and '"summary"' in l]
+    parsed = _json.loads(summary_lines[0][len("data: "):])
+    for key, val in parsed["eval"].items():
+        if val is not None:
+            assert 0.0 <= val <= 1.0, f"{key}={val} out of [0, 1]"
+
+
+def test_stream_summary_eval_null_when_empty_tokens():
+    from unittest.mock import patch
+
+    async def _empty_stream_3(query, chunks, max_tokens=512):
+        yield "[DONE]"
+
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _empty_stream_3
+        r = client.post("/query/stream", json={"query": "q", "top_k": 3})
+    summary_lines = [l for l in r.text.split("\n") if l.startswith("data: ") and '"summary"' in l]
+    assert len(summary_lines) == 1
+    parsed = _json.loads(summary_lines[0][len("data: "):])
+    assert parsed["eval"]["faithfulness"] is None
+    assert parsed["eval"]["answer_relevance"] is None
 
 
 def test_stream_calls_reranker_when_rerank_true():
