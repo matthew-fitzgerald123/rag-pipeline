@@ -1,5 +1,5 @@
 from __future__ import annotations
-from sqlalchemy import Column, String, DateTime, JSON, Integer, Float, Text
+from sqlalchemy import Column, String, DateTime, JSON, Integer, Float, Text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
@@ -20,6 +20,8 @@ class QueryLog(Base):
     query         = Column(Text, nullable=False)
     answer        = Column(Text, nullable=False)
     retrieved_ids = Column(JSON, default=[])
+    top_k         = Column(Integer, nullable=True)
+    reranked      = Column(Boolean, nullable=True)
     hit_rate      = Column(Float, nullable=True)
     mrr           = Column(Float, nullable=True)
     ndcg          = Column(Float, nullable=True)
