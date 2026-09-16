@@ -2426,3 +2426,156 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── Generator._stream_into_queue() unit tests ────────────────
+
+from queue import Queue as _Queue
+from threading import Event as _Event
+from types import SimpleNamespace as _SN
+
+
+def _make_stream_gen():
+    from app.generator import Generator
+    from unittest.mock import MagicMock
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+    return gen
+
+
+def test_stream_into_queue_puts_each_token_text():
+    gen = _make_stream_gen()
+    q = _Queue()
+    done = _Event()
+    fake_chunks = [_SN(text="hello"), _SN(text=" world")]
+    with __import__("unittest.mock", fromlist=["patch"]).patch(
+        "app.generator.stream_generate", return_value=iter(fake_chunks)
+    ):
+        gen._stream_into_queue("prompt", 512, q, done)
+    items = []
+    while not q.empty():
+        items.append(q.get())
+    assert items == ["hello", " world"]
+
+
+def test_stream_into_queue_preserves_token_order():
+    gen = _make_stream_gen()
+    q = _Queue()
+    done = _Event()
+    tokens = ["alpha", " ", "beta", " ", "gamma"]
+    fake_chunks = [_SN(text=t) for t in tokens]
+    with __import__("unittest.mock", fromlist=["patch"]).patch(
+        "app.generator.stream_generate", return_value=iter(fake_chunks)
+    ):
+        gen._stream_into_queue("prompt", 512, q, done)
+    items = []
+    while not q.empty():
+        items.append(q.get())
+    assert items == tokens
+
+
+def test_stream_into_queue_sets_done_after_all_tokens():
+    gen = _make_stream_gen()
+    q = _Queue()
+    done = _Event()
+    assert not done.is_set()
+    with __import__("unittest.mock", fromlist=["patch"]).patch(
+        "app.generator.stream_generate", return_value=iter([_SN(text="tok")])
+    ):
+        gen._stream_into_queue("prompt", 512, q, done)
+    assert done.is_set()
+
+
+def test_stream_into_queue_sets_done_on_empty_stream():
+    gen = _make_stream_gen()
+    q = _Queue()
+    done = _Event()
+    with __import__("unittest.mock", fromlist=["patch"]).patch(
+        "app.generator.stream_generate", return_value=iter([])
+    ):
+        gen._stream_into_queue("prompt", 512, q, done)
+    assert done.is_set()
+    assert q.empty()
+
+
+def test_stream_into_queue_sets_done_even_when_stream_raises():
+    gen = _make_stream_gen()
+    q = _Queue()
+    done = _Event()
+
+    def _raising_gen(*args, **kwargs):
+        yield _SN(text="first")
+        raise RuntimeError("stream error")
+
+    with __import__("unittest.mock", fromlist=["patch"]).patch(
+        "app.generator.stream_generate", side_effect=_raising_gen
+    ):
+        try:
+            gen._stream_into_queue("prompt", 512, q, done)
+        except RuntimeError:
+            pass
+    assert done.is_set()
+
+
+def test_stream_into_queue_passes_prompt_to_stream_generate():
+    from unittest.mock import patch, MagicMock
+    gen = _make_stream_gen()
+    q = _Queue()
+    done = _Event()
+    captured = {}
+
+    def _fake_sg(model, tokenizer, prompt, max_tokens):
+        captured["prompt"] = prompt
+        return iter([])
+
+    with patch("app.generator.stream_generate", side_effect=_fake_sg):
+        gen._stream_into_queue("my test prompt", 512, q, done)
+    assert captured["prompt"] == "my test prompt"
+
+
+def test_stream_into_queue_passes_max_tokens_to_stream_generate():
+    from unittest.mock import patch
+    gen = _make_stream_gen()
+    q = _Queue()
+    done = _Event()
+    captured = {}
+
+    def _fake_sg(model, tokenizer, prompt, max_tokens):
+        captured["max_tokens"] = max_tokens
+        return iter([])
+
+    with patch("app.generator.stream_generate", side_effect=_fake_sg):
+        gen._stream_into_queue("prompt", 256, q, done)
+    assert captured["max_tokens"] == 256
+
+
+def test_stream_into_queue_passes_model_and_tokenizer():
+    from unittest.mock import patch, MagicMock
+    gen = _make_stream_gen()
+    q = _Queue()
+    done = _Event()
+    captured = {}
+
+    def _fake_sg(model, tokenizer, prompt, max_tokens):
+        captured["model"] = model
+        captured["tokenizer"] = tokenizer
+        return iter([])
+
+    with patch("app.generator.stream_generate", side_effect=_fake_sg):
+        gen._stream_into_queue("prompt", 512, q, done)
+    assert captured["model"] is gen.model
+    assert captured["tokenizer"] is gen.tokenizer
+
+
+def test_stream_into_queue_single_token_enqueued_and_done():
+    gen = _make_stream_gen()
+    q = _Queue()
+    done = _Event()
+    with __import__("unittest.mock", fromlist=["patch"]).patch(
+        "app.generator.stream_generate", return_value=iter([_SN(text="only")])
+    ):
+        gen._stream_into_queue("prompt", 512, q, done)
+    assert q.get_nowait() == "only"
+    assert q.empty()
+    assert done.is_set()
