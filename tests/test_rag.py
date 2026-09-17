@@ -2426,3 +2426,140 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── /query/eval API completeness tests ───────────────────────
+
+_EVAL_COMPLETE_CHUNKS = [
+    {
+        "chunk_id": "c1",
+        "text": "Supervised learning uses labeled data.",
+        "metadata": {"title": "ML Basics"},
+        "score": 0.9,
+        "dense_score": 0.9,
+        "bm25_score": 0.5,
+    }
+]
+
+
+def test_query_eval_empty_index_returns_400():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 0
+        r = client.post("/query/eval", json={
+            "query": "What is ML?",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 3,
+        })
+    assert r.status_code == 400
+
+
+def test_query_eval_response_includes_reranked_field():
+    from unittest.mock import patch, MagicMock
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _EVAL_COMPLETE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query/eval", json={
+            "query": "supervised learning",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 1,
+        })
+    assert r.status_code == 200
+    assert "reranked" in r.json()
+
+
+def test_query_eval_reranked_false_when_not_requested():
+    from unittest.mock import patch, MagicMock
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _EVAL_COMPLETE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query/eval", json={
+            "query": "supervised learning",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 1,
+            "rerank": False,
+        })
+    assert r.json()["reranked"] is False
+
+
+def test_query_eval_reranked_true_when_requested():
+    from unittest.mock import patch, MagicMock
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen, \
+         patch("app.main.rerank") as mock_rerank:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _EVAL_COMPLETE_CHUNKS
+        mock_rerank.return_value = _EVAL_COMPLETE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query/eval", json={
+            "query": "supervised learning",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 1,
+            "rerank": True,
+        })
+    assert r.json()["reranked"] is True
+
+
+def test_query_eval_response_includes_citations_field():
+    from unittest.mock import patch, MagicMock
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _EVAL_COMPLETE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query/eval", json={
+            "query": "supervised learning",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 1,
+        })
+    assert r.status_code == 200
+    assert "citations" in r.json()
+
+
+def test_query_eval_citations_field_is_list():
+    from unittest.mock import patch, MagicMock
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _EVAL_COMPLETE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query/eval", json={
+            "query": "supervised learning",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 1,
+        })
+    assert isinstance(r.json()["citations"], list)
+
+
+def test_query_eval_response_has_same_top_level_fields_as_query():
+    from unittest.mock import patch, MagicMock
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _EVAL_COMPLETE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query/eval", json={
+            "query": "supervised learning",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 1,
+        })
+    assert r.status_code == 200
+    data = r.json()
+    for field in ("query", "answer", "chunks", "reranked", "citations", "eval"):
+        assert field in data, f"missing top-level field: {field}"
+
+
+def test_query_eval_empty_index_does_not_call_vector_store_query():
+    from unittest.mock import patch, MagicMock
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 0
+        client.post("/query/eval", json={
+            "query": "What is ML?",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 3,
+        })
+    mock_vs.query.assert_not_called()
