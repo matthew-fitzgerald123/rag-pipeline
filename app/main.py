@@ -102,19 +102,31 @@ async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
     async def event_generator() -> AsyncIterator[str]:
         token_parts: list[str] = []
         async for payload in generator.answer_stream(req.query, chunks):
+            if payload == "[DONE]":
+                break
             yield f"data: {payload}\n\n"
-            if payload != "[DONE]":
-                try:
-                    token_parts.append(json.loads(payload)["token"])
-                except (json.JSONDecodeError, KeyError):
-                    pass
+            try:
+                token_parts.append(json.loads(payload)["token"])
+            except (json.JSONDecodeError, KeyError):
+                pass
         full_answer = "".join(token_parts)
+        faith = faithfulness(full_answer, chunks) if full_answer else None
+        ar = answer_relevance(req.query, full_answer) if full_answer else None
+        metadata = {
+            "type":      "metadata",
+            "chunks":    chunks,
+            "citations": extract_citations(full_answer, chunks) if full_answer else [],
+            "reranked":  req.rerank,
+            "eval":      {"faithfulness": faith, "answer_relevance": ar},
+        }
+        yield f"data: {json.dumps(metadata)}\n\n"
+        yield "data: [DONE]\n\n"
         log = QueryLog(
             query=req.query,
             answer=full_answer or "(empty stream)",
             retrieved_ids=[c["chunk_id"] for c in chunks],
-            faithfulness=faithfulness(full_answer, chunks) if full_answer else None,
-            answer_relevance=answer_relevance(req.query, full_answer) if full_answer else None,
+            faithfulness=faith,
+            answer_relevance=ar,
         )
         db.add(log)
         db.commit()
@@ -124,6 +136,9 @@ async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
 
 @app.post("/query/eval", tags=["rag"])
 def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
+    if vector_store.count() == 0:
+        raise HTTPException(400, "No documents indexed. Run: make ingest")
+
     candidates = vector_store.query(req.query, top_k=max(req.top_k, RERANKER_TOP_K))
     if not candidates:
         raise HTTPException(404, "No relevant chunks found")
@@ -153,9 +168,11 @@ def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
     db.commit()
 
     return {
-        "query":  req.query,
-        "answer": answer,
-        "chunks": chunks,
+        "query":    req.query,
+        "answer":   answer,
+        "chunks":   chunks,
+        "reranked": req.rerank,
+        "citations": extract_citations(answer, chunks),
         "eval": {
             "hit_rate":         hr,
             "mrr":              mrr,

@@ -1231,12 +1231,178 @@ def test_stream_token_events_are_json_with_token_key():
         r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
     token_lines = [
         line for line in r.text.split("\n")
-        if line.startswith("data: ") and line.strip() != "data: [DONE]"
+        if line.startswith("data: ")
+        and line.strip() != "data: [DONE]"
+        and '"type": "metadata"' not in line
     ]
     assert len(token_lines) == 2
     for line in token_lines:
         parsed = _json.loads(line[len("data: "):])
         assert "token" in parsed
+
+
+# ── /query/stream metadata event tests ───────────────────────
+
+
+def _parse_metadata_event(response_text: str) -> dict:
+    metadata_line = next(
+        line for line in response_text.split("\n")
+        if line.startswith("data: ") and '"type": "metadata"' in line
+    )
+    return _json.loads(metadata_line[len("data: "):])
+
+
+def test_stream_emits_metadata_event():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    metadata_lines = [
+        line for line in r.text.split("\n")
+        if line.startswith("data: ") and '"type": "metadata"' in line
+    ]
+    assert len(metadata_lines) == 1
+
+
+def test_stream_metadata_event_has_required_keys():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    parsed = _parse_metadata_event(r.text)
+    for key in ("type", "chunks", "citations", "reranked", "eval"):
+        assert key in parsed, f"metadata event missing key: {key}"
+
+
+def test_stream_metadata_event_type_is_metadata():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    parsed = _parse_metadata_event(r.text)
+    assert parsed["type"] == "metadata"
+
+
+def test_stream_metadata_event_chunks_field_is_list():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    parsed = _parse_metadata_event(r.text)
+    assert isinstance(parsed["chunks"], list)
+
+
+def test_stream_metadata_event_citations_field_is_list():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    parsed = _parse_metadata_event(r.text)
+    assert isinstance(parsed["citations"], list)
+
+
+def test_stream_metadata_event_eval_has_faithfulness_and_answer_relevance():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    parsed = _parse_metadata_event(r.text)
+    assert "faithfulness" in parsed["eval"]
+    assert "answer_relevance" in parsed["eval"]
+
+
+def test_stream_metadata_event_reranked_false_when_not_requested():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3, "rerank": False})
+    parsed = _parse_metadata_event(r.text)
+    assert parsed["reranked"] is False
+
+
+def test_stream_metadata_event_reranked_true_when_requested():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen, \
+         patch("app.main.rerank") as mock_rerank:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_rerank.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3, "rerank": True})
+    parsed = _parse_metadata_event(r.text)
+    assert parsed["reranked"] is True
+
+
+def test_stream_metadata_event_before_done_sentinel():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    data_lines = [line for line in r.text.split("\n") if line.startswith("data: ")]
+    metadata_idx = next(i for i, l in enumerate(data_lines) if '"type": "metadata"' in l)
+    done_idx = next(i for i, l in enumerate(data_lines) if l.strip() == "data: [DONE]")
+    assert metadata_idx < done_idx
+
+
+def test_stream_empty_tokens_metadata_has_empty_citations_and_null_eval():
+    from unittest.mock import patch, MagicMock
+    mock_db = MagicMock()
+    _override_db(mock_db)
+
+    async def _empty_stream_meta(query, chunks, max_tokens=512):
+        yield "[DONE]"
+
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer_stream = _empty_stream_meta
+            r = client.post("/query/stream", json={"query": "q", "top_k": 3})
+    finally:
+        _clear_overrides()
+    parsed = _parse_metadata_event(r.text)
+    assert parsed["citations"] == []
+    assert parsed["eval"]["faithfulness"] is None
+    assert parsed["eval"]["answer_relevance"] is None
+
+
+def test_stream_metadata_chunks_match_retrieved():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "What is ML?", "top_k": 3})
+    parsed = _parse_metadata_event(r.text)
+    assert len(parsed["chunks"]) == len(_STREAM_FAKE_CHUNKS)
+    assert parsed["chunks"][0]["chunk_id"] == _STREAM_FAKE_CHUNKS[0]["chunk_id"]
 
 
 def test_stream_calls_reranker_when_rerank_true():
@@ -2426,3 +2592,140 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── /query/eval API completeness tests ───────────────────────
+
+_EVAL_COMPLETE_CHUNKS = [
+    {
+        "chunk_id": "c1",
+        "text": "Supervised learning uses labeled data.",
+        "metadata": {"title": "ML Basics"},
+        "score": 0.9,
+        "dense_score": 0.9,
+        "bm25_score": 0.5,
+    }
+]
+
+
+def test_query_eval_empty_index_returns_400():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 0
+        r = client.post("/query/eval", json={
+            "query": "What is ML?",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 3,
+        })
+    assert r.status_code == 400
+
+
+def test_query_eval_response_includes_reranked_field():
+    from unittest.mock import patch, MagicMock
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _EVAL_COMPLETE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query/eval", json={
+            "query": "supervised learning",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 1,
+        })
+    assert r.status_code == 200
+    assert "reranked" in r.json()
+
+
+def test_query_eval_reranked_false_when_not_requested():
+    from unittest.mock import patch, MagicMock
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _EVAL_COMPLETE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query/eval", json={
+            "query": "supervised learning",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 1,
+            "rerank": False,
+        })
+    assert r.json()["reranked"] is False
+
+
+def test_query_eval_reranked_true_when_requested():
+    from unittest.mock import patch, MagicMock
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen, \
+         patch("app.main.rerank") as mock_rerank:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _EVAL_COMPLETE_CHUNKS
+        mock_rerank.return_value = _EVAL_COMPLETE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query/eval", json={
+            "query": "supervised learning",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 1,
+            "rerank": True,
+        })
+    assert r.json()["reranked"] is True
+
+
+def test_query_eval_response_includes_citations_field():
+    from unittest.mock import patch, MagicMock
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _EVAL_COMPLETE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query/eval", json={
+            "query": "supervised learning",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 1,
+        })
+    assert r.status_code == 200
+    assert "citations" in r.json()
+
+
+def test_query_eval_citations_field_is_list():
+    from unittest.mock import patch, MagicMock
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _EVAL_COMPLETE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query/eval", json={
+            "query": "supervised learning",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 1,
+        })
+    assert isinstance(r.json()["citations"], list)
+
+
+def test_query_eval_response_has_same_top_level_fields_as_query():
+    from unittest.mock import patch, MagicMock
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _EVAL_COMPLETE_CHUNKS
+        mock_gen.answer.return_value = "Supervised learning uses labeled data."
+        r = client.post("/query/eval", json={
+            "query": "supervised learning",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 1,
+        })
+    assert r.status_code == 200
+    data = r.json()
+    for field in ("query", "answer", "chunks", "reranked", "citations", "eval"):
+        assert field in data, f"missing top-level field: {field}"
+
+
+def test_query_eval_empty_index_does_not_call_vector_store_query():
+    from unittest.mock import patch, MagicMock
+    with patch("app.main.vector_store") as mock_vs:
+        mock_vs.count.return_value = 0
+        client.post("/query/eval", json={
+            "query": "What is ML?",
+            "relevant_doc_ids": ["c1"],
+            "top_k": 3,
+        })
+    mock_vs.query.assert_not_called()
