@@ -2729,3 +2729,182 @@ def test_query_eval_empty_index_does_not_call_vector_store_query():
             "top_k": 3,
         })
     mock_vs.query.assert_not_called()
+
+
+# ── ingest_file() unit tests ──────────────────────────────────
+
+from unittest.mock import patch, MagicMock, call
+from pathlib import Path as _Path
+
+
+def _make_path(stem: str, content: str) -> MagicMock:
+    p = MagicMock(spec=_Path)
+    p.stem = stem
+    p.read_text.return_value = content
+    p.__str__ = lambda self: f"data/{stem}.txt"
+    return p
+
+
+def _make_db(existing=None):
+    db = MagicMock()
+    db.query.return_value.filter_by.return_value.first.return_value = existing
+    return db
+
+
+def test_ingest_file_skips_empty_content():
+    from scripts.ingest import ingest_file
+    db = _make_db()
+    ingest_file(_make_path("doc", ""), db)
+    db.add.assert_not_called()
+    db.commit.assert_not_called()
+
+
+def test_ingest_file_skips_whitespace_only_content():
+    from scripts.ingest import ingest_file
+    db = _make_db()
+    ingest_file(_make_path("doc", "   \n\t  "), db)
+    db.add.assert_not_called()
+
+
+def test_ingest_file_skips_already_ingested_title():
+    from scripts.ingest import ingest_file
+    from unittest.mock import MagicMock
+    existing_doc = MagicMock()
+    db = _make_db(existing=existing_doc)
+    ingest_file(_make_path("ml_basics", "Some content here."), db)
+    db.add.assert_not_called()
+
+
+def test_ingest_file_creates_document_in_db():
+    from scripts.ingest import ingest_file
+    from app.models import Document
+    db = _make_db()
+    with patch("scripts.ingest.vector_store") as mock_vs:
+        mock_vs.add_chunks = MagicMock()
+        ingest_file(_make_path("doc1", "Some meaningful content."), db)
+    db.add.assert_called_once()
+    added = db.add.call_args[0][0]
+    assert isinstance(added, Document)
+    assert added.title == "doc1"
+    assert added.content == "Some meaningful content."
+
+
+def test_ingest_file_commits_to_db():
+    from scripts.ingest import ingest_file
+    db = _make_db()
+    with patch("scripts.ingest.vector_store") as mock_vs:
+        mock_vs.add_chunks = MagicMock()
+        ingest_file(_make_path("doc1", "Some content."), db)
+    db.commit.assert_called_once()
+
+
+def test_ingest_file_calls_chunk_document():
+    from scripts.ingest import ingest_file
+    db = _make_db()
+    with patch("scripts.ingest.vector_store") as mock_vs, \
+         patch("scripts.ingest.chunk_document", return_value=[]) as mock_chunk:
+        mock_vs.add_chunks = MagicMock()
+        ingest_file(_make_path("doc1", "Some content."), db)
+    mock_chunk.assert_called_once()
+
+
+def test_ingest_file_chunk_document_receives_content():
+    from scripts.ingest import ingest_file
+    db = _make_db()
+    captured = {}
+    def fake_chunk(doc_id, text, metadata, chunk_size, overlap):
+        captured["text"] = text
+        return []
+    with patch("scripts.ingest.vector_store") as mock_vs, \
+         patch("scripts.ingest.chunk_document", side_effect=fake_chunk):
+        mock_vs.add_chunks = MagicMock()
+        ingest_file(_make_path("doc1", "The actual content."), db)
+    assert captured["text"] == "The actual content."
+
+
+def test_ingest_file_chunk_document_metadata_includes_title():
+    from scripts.ingest import ingest_file
+    db = _make_db()
+    captured = {}
+    def fake_chunk(doc_id, text, metadata, chunk_size, overlap):
+        captured["metadata"] = metadata
+        return []
+    with patch("scripts.ingest.vector_store") as mock_vs, \
+         patch("scripts.ingest.chunk_document", side_effect=fake_chunk):
+        mock_vs.add_chunks = MagicMock()
+        ingest_file(_make_path("my_doc", "Content here."), db)
+    assert captured["metadata"]["title"] == "my_doc"
+
+
+def test_ingest_file_chunk_document_metadata_includes_source():
+    from scripts.ingest import ingest_file
+    db = _make_db()
+    captured = {}
+    def fake_chunk(doc_id, text, metadata, chunk_size, overlap):
+        captured["metadata"] = metadata
+        return []
+    path = _make_path("my_doc", "Content here.")
+    with patch("scripts.ingest.vector_store") as mock_vs, \
+         patch("scripts.ingest.chunk_document", side_effect=fake_chunk):
+        mock_vs.add_chunks = MagicMock()
+        ingest_file(path, db)
+    assert "source" in captured["metadata"]
+    assert str(path) in captured["metadata"]["source"]
+
+
+def test_ingest_file_adds_chunks_to_vector_store():
+    from scripts.ingest import ingest_file
+    from app.chunker import Chunk
+    fake_chunks = [Chunk(chunk_id="c1", doc_id="d1", text="text", metadata={})]
+    db = _make_db()
+    with patch("scripts.ingest.vector_store") as mock_vs, \
+         patch("scripts.ingest.chunk_document", return_value=fake_chunks):
+        ingest_file(_make_path("doc1", "Some content."), db)
+    mock_vs.add_chunks.assert_called_once_with(fake_chunks)
+
+
+def test_ingest_file_chunk_size_and_overlap_defaults():
+    from scripts.ingest import ingest_file
+    db = _make_db()
+    captured = {}
+    def fake_chunk(doc_id, text, metadata, chunk_size, overlap):
+        captured["chunk_size"] = chunk_size
+        captured["overlap"] = overlap
+        return []
+    with patch("scripts.ingest.vector_store") as mock_vs, \
+         patch("scripts.ingest.chunk_document", side_effect=fake_chunk):
+        mock_vs.add_chunks = MagicMock()
+        ingest_file(_make_path("doc1", "Content."), db)
+    assert captured["chunk_size"] == 512
+    assert captured["overlap"] == 64
+
+
+def test_ingest_file_doc_id_passed_to_chunk_document():
+    from scripts.ingest import ingest_file
+    db = _make_db()
+    captured = {}
+    def fake_chunk(doc_id, text, metadata, chunk_size, overlap):
+        captured["doc_id"] = doc_id
+        return []
+    with patch("scripts.ingest.vector_store") as mock_vs, \
+         patch("scripts.ingest.chunk_document", side_effect=fake_chunk):
+        mock_vs.add_chunks = MagicMock()
+        ingest_file(_make_path("doc1", "Content."), db)
+    assert captured["doc_id"] is not None
+    assert len(captured["doc_id"]) == 8
+
+
+def test_ingest_file_doc_id_matches_document_in_db():
+    from scripts.ingest import ingest_file
+    db = _make_db()
+    db_doc_id = {}
+    chunk_doc_id = {}
+    def fake_chunk(doc_id, text, metadata, chunk_size, overlap):
+        chunk_doc_id["id"] = doc_id
+        return []
+    with patch("scripts.ingest.vector_store") as mock_vs, \
+         patch("scripts.ingest.chunk_document", side_effect=fake_chunk):
+        mock_vs.add_chunks = MagicMock()
+        ingest_file(_make_path("doc1", "Content."), db)
+    added = db.add.call_args[0][0]
+    assert added.doc_id == chunk_doc_id["id"]
