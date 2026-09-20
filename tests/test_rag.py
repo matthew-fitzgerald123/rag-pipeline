@@ -2908,3 +2908,415 @@ def test_ingest_file_doc_id_matches_document_in_db():
         ingest_file(_make_path("doc1", "Content."), db)
     added = db.add.call_args[0][0]
     assert added.doc_id == chunk_doc_id["id"]
+
+
+# ── VectorStore.add_chunks() unit tests ──────────────────────
+
+def _make_vs_with_mocks():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.embedder = MagicMock()
+    vs._bm25 = None
+    vs._bm25_ids = []
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2, 0.3]])
+    return vs
+
+
+def test_add_chunks_empty_list_returns_early():
+    vs = _make_vs_with_mocks()
+    vs.add_chunks([])
+    vs.embedder.encode.assert_not_called()
+    vs.collection.add.assert_not_called()
+
+
+def test_add_chunks_calls_embedder_with_chunk_texts():
+    from app.chunker import Chunk
+    from unittest.mock import patch
+    import numpy as np
+    vs = _make_vs_with_mocks()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2]])
+    chunks = [Chunk(chunk_id="c1", doc_id="d1", text="hello world", metadata={})]
+    with patch.object(vs, "_rebuild_bm25"):
+        vs.add_chunks(chunks)
+    call_args = vs.embedder.encode.call_args
+    assert call_args[0][0] == ["hello world"]
+
+
+def test_add_chunks_uses_batch_size_32():
+    from app.chunker import Chunk
+    from unittest.mock import patch
+    import numpy as np
+    vs = _make_vs_with_mocks()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2]])
+    chunks = [Chunk(chunk_id="c1", doc_id="d1", text="text", metadata={})]
+    with patch.object(vs, "_rebuild_bm25"):
+        vs.add_chunks(chunks)
+    call_kwargs = vs.embedder.encode.call_args[1]
+    assert call_kwargs.get("batch_size") == 32
+
+
+def test_add_chunks_uses_normalize_embeddings():
+    from app.chunker import Chunk
+    from unittest.mock import patch
+    import numpy as np
+    vs = _make_vs_with_mocks()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2]])
+    chunks = [Chunk(chunk_id="c1", doc_id="d1", text="text", metadata={})]
+    with patch.object(vs, "_rebuild_bm25"):
+        vs.add_chunks(chunks)
+    call_kwargs = vs.embedder.encode.call_args[1]
+    assert call_kwargs.get("normalize_embeddings") is True
+
+
+def test_add_chunks_calls_collection_add_with_ids():
+    from app.chunker import Chunk
+    from unittest.mock import patch
+    import numpy as np
+    vs = _make_vs_with_mocks()
+    vs.embedder.encode.return_value = np.array([[0.5, 0.6]])
+    chunks = [Chunk(chunk_id="c1", doc_id="d1", text="content", metadata={"title": "T"})]
+    with patch.object(vs, "_rebuild_bm25"):
+        vs.add_chunks(chunks)
+    call_kwargs = vs.collection.add.call_args[1]
+    assert call_kwargs["ids"] == ["c1"]
+
+
+def test_add_chunks_calls_collection_add_with_documents():
+    from app.chunker import Chunk
+    from unittest.mock import patch
+    import numpy as np
+    vs = _make_vs_with_mocks()
+    vs.embedder.encode.return_value = np.array([[0.5, 0.6]])
+    chunks = [Chunk(chunk_id="c1", doc_id="d1", text="the text", metadata={})]
+    with patch.object(vs, "_rebuild_bm25"):
+        vs.add_chunks(chunks)
+    call_kwargs = vs.collection.add.call_args[1]
+    assert call_kwargs["documents"] == ["the text"]
+
+
+def test_add_chunks_calls_collection_add_with_metadatas():
+    from app.chunker import Chunk
+    from unittest.mock import patch
+    import numpy as np
+    vs = _make_vs_with_mocks()
+    vs.embedder.encode.return_value = np.array([[0.5, 0.6]])
+    meta = {"title": "ML", "source": "ml.txt"}
+    chunks = [Chunk(chunk_id="c1", doc_id="d1", text="text", metadata=meta)]
+    with patch.object(vs, "_rebuild_bm25"):
+        vs.add_chunks(chunks)
+    call_kwargs = vs.collection.add.call_args[1]
+    assert call_kwargs["metadatas"] == [meta]
+
+
+def test_add_chunks_calls_rebuild_bm25_after_add():
+    from app.chunker import Chunk
+    from unittest.mock import patch, MagicMock
+    import numpy as np
+    vs = _make_vs_with_mocks()
+    vs.embedder.encode.return_value = np.array([[0.5, 0.6]])
+    chunks = [Chunk(chunk_id="c1", doc_id="d1", text="text", metadata={})]
+    with patch.object(vs, "_rebuild_bm25") as mock_rebuild:
+        vs.add_chunks(chunks)
+    mock_rebuild.assert_called_once()
+
+
+def test_add_chunks_multiple_chunks_embedder_gets_all_texts():
+    from app.chunker import Chunk
+    from unittest.mock import patch
+    import numpy as np
+    vs = _make_vs_with_mocks()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2], [0.3, 0.4]])
+    chunks = [
+        Chunk(chunk_id="c1", doc_id="d1", text="first text", metadata={}),
+        Chunk(chunk_id="c2", doc_id="d1", text="second text", metadata={}),
+    ]
+    with patch.object(vs, "_rebuild_bm25"):
+        vs.add_chunks(chunks)
+    assert vs.embedder.encode.call_args[0][0] == ["first text", "second text"]
+
+
+# ── VectorStore._dense_query() unit tests ────────────────────
+
+def test_dense_query_calls_embedder_encode_on_query():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.embedder = MagicMock()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2, 0.3]])
+    vs.collection.count.return_value = 3
+    vs.collection.query.return_value = {"ids": [[]], "distances": [[]]}
+    vs._dense_query("what is ML", top_k=5)
+    call_args = vs.embedder.encode.call_args[0][0]
+    assert call_args == ["what is ML"]
+
+
+def test_dense_query_uses_normalize_embeddings():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.embedder = MagicMock()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2]])
+    vs.collection.count.return_value = 3
+    vs.collection.query.return_value = {"ids": [[]], "distances": [[]]}
+    vs._dense_query("query", top_k=3)
+    call_kwargs = vs.embedder.encode.call_args[1]
+    assert call_kwargs.get("normalize_embeddings") is True
+
+
+def test_dense_query_converts_distance_to_cosine_similarity():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.embedder = MagicMock()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2]])
+    vs.collection.count.return_value = 3
+    vs.collection.query.return_value = {
+        "ids": [["c1"]],
+        "distances": [[0.2]],
+    }
+    result = vs._dense_query("query", top_k=1)
+    assert result["c1"] == round(1 - 0.2, 4)
+
+
+def test_dense_query_returns_dict_of_chunk_ids_to_scores():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.embedder = MagicMock()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2]])
+    vs.collection.count.return_value = 3
+    vs.collection.query.return_value = {
+        "ids": [["c1", "c2"]],
+        "distances": [[0.1, 0.4]],
+    }
+    result = vs._dense_query("query", top_k=2)
+    assert isinstance(result, dict)
+    assert set(result.keys()) == {"c1", "c2"}
+
+
+def test_dense_query_scores_are_rounded_to_4_decimals():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.embedder = MagicMock()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2]])
+    vs.collection.count.return_value = 3
+    vs.collection.query.return_value = {
+        "ids": [["c1"]],
+        "distances": [[0.123456]],
+    }
+    result = vs._dense_query("query", top_k=1)
+    assert result["c1"] == round(1 - 0.123456, 4)
+
+
+def test_dense_query_empty_results_returns_empty_dict():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.embedder = MagicMock()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2]])
+    vs.collection.count.return_value = 3
+    vs.collection.query.return_value = {"ids": [[]], "distances": [[]]}
+    result = vs._dense_query("query", top_k=5)
+    assert result == {}
+
+
+def test_dense_query_n_results_scaled_by_top_k():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.embedder = MagicMock()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2]])
+    vs.collection.count.return_value = 100
+    vs.collection.query.return_value = {"ids": [[]], "distances": [[]]}
+    vs._dense_query("query", top_k=5)
+    call_kwargs = vs.collection.query.call_args[1]
+    assert call_kwargs["n_results"] == 10
+
+
+# ── VectorStore.count() unit tests ───────────────────────────
+
+def test_count_delegates_to_collection_count():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 42
+    assert vs.count() == 42
+
+
+def test_count_returns_zero_when_collection_empty():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 0
+    assert vs.count() == 0
+
+
+def test_count_calls_collection_count_once():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 5
+    vs.count()
+    vs.collection.count.assert_called_once()
+
+
+# ── VectorStore.reset() unit tests ───────────────────────────
+
+def test_reset_deletes_documents_collection():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.client = MagicMock()
+    vs.collection = MagicMock()
+    vs._bm25 = object()
+    vs._bm25_ids = ["c1"]
+    vs.client.get_or_create_collection.return_value = MagicMock()
+    vs.reset()
+    vs.client.delete_collection.assert_called_once_with("documents")
+
+
+def test_reset_recreates_documents_collection():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.client = MagicMock()
+    vs.collection = MagicMock()
+    vs._bm25 = None
+    vs._bm25_ids = []
+    new_col = MagicMock()
+    vs.client.get_or_create_collection.return_value = new_col
+    vs.reset()
+    call_kwargs = vs.client.get_or_create_collection.call_args[1]
+    assert call_kwargs.get("name") == "documents"
+
+
+def test_reset_sets_bm25_to_none():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.client = MagicMock()
+    vs.collection = MagicMock()
+    vs._bm25 = object()
+    vs._bm25_ids = ["c1"]
+    vs.client.get_or_create_collection.return_value = MagicMock()
+    vs.reset()
+    assert vs._bm25 is None
+
+
+def test_reset_clears_bm25_ids():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.client = MagicMock()
+    vs.collection = MagicMock()
+    vs._bm25 = None
+    vs._bm25_ids = ["c1", "c2"]
+    vs.client.get_or_create_collection.return_value = MagicMock()
+    vs.reset()
+    assert vs._bm25_ids == []
+
+
+def test_reset_updates_collection_to_new_instance():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.client = MagicMock()
+    vs.collection = MagicMock()
+    vs._bm25 = None
+    vs._bm25_ids = []
+    new_col = MagicMock()
+    vs.client.get_or_create_collection.return_value = new_col
+    vs.reset()
+    assert vs.collection is new_col
+
+
+# ── VectorStore._rebuild_bm25() unit tests ───────────────────
+
+def test_rebuild_bm25_empty_collection_sets_bm25_none():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 0
+    vs._bm25 = object()
+    vs._bm25_ids = ["c1"]
+    vs._rebuild_bm25()
+    assert vs._bm25 is None
+
+
+def test_rebuild_bm25_empty_collection_clears_ids():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 0
+    vs._bm25 = None
+    vs._bm25_ids = ["c1", "c2"]
+    vs._rebuild_bm25()
+    assert vs._bm25_ids == []
+
+
+def test_rebuild_bm25_non_empty_collection_builds_index():
+    from app.vector_store import VectorStore
+    from rank_bm25 import BM25Okapi
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 2
+    vs.collection.get.return_value = {
+        "ids": ["c1", "c2"],
+        "documents": ["machine learning algorithms", "deep neural networks"],
+    }
+    vs._bm25 = None
+    vs._bm25_ids = []
+    vs._rebuild_bm25()
+    assert isinstance(vs._bm25, BM25Okapi)
+
+
+def test_rebuild_bm25_non_empty_collection_sets_ids():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 2
+    vs.collection.get.return_value = {
+        "ids": ["c1", "c2"],
+        "documents": ["text one", "text two"],
+    }
+    vs._bm25 = None
+    vs._bm25_ids = []
+    vs._rebuild_bm25()
+    assert vs._bm25_ids == ["c1", "c2"]
+
+
+def test_rebuild_bm25_does_not_call_get_when_empty():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.count.return_value = 0
+    vs._bm25 = None
+    vs._bm25_ids = []
+    vs._rebuild_bm25()
+    vs.collection.get.assert_not_called()
