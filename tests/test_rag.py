@@ -3320,3 +3320,140 @@ def test_rebuild_bm25_does_not_call_get_when_empty():
     vs._bm25_ids = []
     vs._rebuild_bm25()
     vs.collection.get.assert_not_called()
+
+
+# ── reranker._get_model() singleton unit tests ────────────────
+
+
+def test_get_model_creates_cross_encoder_on_first_call():
+    from unittest.mock import patch, MagicMock
+    import app.reranker as rr_module
+    old_model = rr_module._model
+    rr_module._model = None
+    try:
+        with patch("app.reranker.CrossEncoder") as mock_ce:
+            mock_instance = MagicMock()
+            mock_ce.return_value = mock_instance
+            result = rr_module._get_model()
+        assert result is mock_instance
+    finally:
+        rr_module._model = old_model
+
+
+def test_get_model_uses_reranker_model_name():
+    from unittest.mock import patch, MagicMock
+    import app.reranker as rr_module
+    old_model = rr_module._model
+    rr_module._model = None
+    try:
+        with patch("app.reranker.CrossEncoder") as mock_ce:
+            mock_ce.return_value = MagicMock()
+            rr_module._get_model()
+        mock_ce.assert_called_once_with(rr_module.RERANKER_MODEL)
+    finally:
+        rr_module._model = old_model
+
+
+def test_get_model_caches_instance_across_calls():
+    from unittest.mock import patch, MagicMock
+    import app.reranker as rr_module
+    old_model = rr_module._model
+    rr_module._model = None
+    try:
+        with patch("app.reranker.CrossEncoder") as mock_ce:
+            mock_ce.return_value = MagicMock()
+            first = rr_module._get_model()
+            second = rr_module._get_model()
+        assert first is second
+        mock_ce.assert_called_once()
+    finally:
+        rr_module._model = old_model
+
+
+def test_get_model_returns_existing_model_without_recreating():
+    from unittest.mock import patch, MagicMock
+    import app.reranker as rr_module
+    old_model = rr_module._model
+    sentinel = MagicMock(name="existing_model")
+    rr_module._model = sentinel
+    try:
+        with patch("app.reranker.CrossEncoder") as mock_ce:
+            result = rr_module._get_model()
+        assert result is sentinel
+        mock_ce.assert_not_called()
+    finally:
+        rr_module._model = old_model
+
+
+def test_get_model_returns_cross_encoder_type_on_first_call():
+    from unittest.mock import patch, MagicMock
+    import app.reranker as rr_module
+    old_model = rr_module._model
+    rr_module._model = None
+    try:
+        with patch("app.reranker.CrossEncoder") as mock_ce:
+            mock_ce.return_value = MagicMock()
+            result = rr_module._get_model()
+        assert result is not None
+    finally:
+        rr_module._model = old_model
+
+
+# ── extract_citations() edge case unit tests ─────────────────
+
+
+def test_extract_citations_stopwords_only_sentence_is_skipped():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "Machine learning is powerful.", "metadata": {}}]
+    # "The is a." → all stopwords → _tokens returns empty set → sentence is skipped
+    result = extract_citations("The is a. Machine learning works.", chunks, threshold=0.1)
+    sentences_in_output = [r["sentence"] for r in result]
+    assert not any(s.strip() in ("The is a", "the is a") for s in sentences_in_output)
+
+
+def test_extract_citations_title_from_chunk_metadata():
+    from app.citations import extract_citations
+    chunks = [
+        {"chunk_id": "c1", "text": "Supervised learning trains on labeled data.", "metadata": {"title": "ML Basics"}}
+    ]
+    result = extract_citations("Supervised learning trains on labeled data.", chunks, threshold=0.1)
+    assert len(result) >= 1
+    assert result[0]["citations"][0]["title"] == "ML Basics"
+
+
+def test_extract_citations_missing_title_defaults_to_empty_string():
+    from app.citations import extract_citations
+    chunks = [
+        {"chunk_id": "c1", "text": "Supervised learning trains on labeled data.", "metadata": {}}
+    ]
+    result = extract_citations("Supervised learning trains on labeled data.", chunks, threshold=0.1)
+    assert len(result) >= 1
+    assert result[0]["citations"][0]["title"] == ""
+
+
+def test_extract_citations_overlap_rounded_to_3_decimals():
+    from app.citations import extract_citations
+    chunks = [
+        {"chunk_id": "c1", "text": "neural networks learn data representations features patterns", "metadata": {}}
+    ]
+    result = extract_citations("Neural networks learn from data.", chunks, threshold=0.1)
+    if result and result[0]["citations"]:
+        ov = result[0]["citations"][0]["overlap"]
+        assert ov == round(ov, 3)
+
+
+def test_extract_citations_single_sentence_no_trailing_space():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "c1", "text": "overfitting regularization machine learning", "metadata": {"title": "T"}}]
+    result = extract_citations("Overfitting is reduced by regularization.", chunks, threshold=0.1)
+    assert len(result) == 1
+    assert result[0]["sentence"] == "Overfitting is reduced by regularization."
+
+
+def test_extract_citations_chunk_id_in_output():
+    from app.citations import extract_citations
+    chunks = [{"chunk_id": "special_id_42", "text": "neural networks learn representations", "metadata": {}}]
+    result = extract_citations("Neural networks learn representations.", chunks, threshold=0.1)
+    assert len(result) >= 1
+    if result[0]["citations"]:
+        assert result[0]["citations"][0]["chunk_id"] == "special_id_42"
