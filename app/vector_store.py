@@ -65,6 +65,8 @@ class VectorStore:
         self._rebuild_bm25()
 
     def _dense_query(self, query_text: str, top_k: int) -> dict[str, float]:
+        if self.collection.count() == 0:
+            return {}
         embedding = self.embedder.encode(
             [query_text], normalize_embeddings=True
         ).tolist()

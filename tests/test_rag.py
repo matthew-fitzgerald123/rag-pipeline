@@ -3151,6 +3151,44 @@ def test_dense_query_n_results_scaled_by_top_k():
     assert call_kwargs["n_results"] == 10
 
 
+def test_dense_query_empty_collection_returns_empty_dict():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.embedder = MagicMock()
+    vs.collection.count.return_value = 0
+    result = vs._dense_query("query", top_k=5)
+    assert result == {}
+
+
+def test_dense_query_empty_collection_does_not_call_collection_query():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.embedder = MagicMock()
+    vs.collection.count.return_value = 0
+    vs._dense_query("query", top_k=5)
+    vs.collection.query.assert_not_called()
+
+
+def test_dense_query_n_results_clamped_to_collection_size():
+    from app.vector_store import VectorStore
+    from unittest.mock import MagicMock
+    import numpy as np
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.embedder = MagicMock()
+    vs.embedder.encode.return_value = np.array([[0.1, 0.2]])
+    vs.collection.count.return_value = 3
+    vs.collection.query.return_value = {"ids": [[]], "distances": [[]]}
+    vs._dense_query("query", top_k=10)
+    call_kwargs = vs.collection.query.call_args[1]
+    assert call_kwargs["n_results"] == 3
+
+
 # ── VectorStore.count() unit tests ───────────────────────────
 
 def test_count_delegates_to_collection_count():
