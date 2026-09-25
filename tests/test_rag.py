@@ -3495,3 +3495,206 @@ def test_extract_citations_chunk_id_in_output():
     assert len(result) >= 1
     if result[0]["citations"]:
         assert result[0]["citations"][0]["chunk_id"] == "special_id_42"
+
+
+# ── Generator.load_model() unit tests ────────────────────────
+
+
+def test_load_model_calls_mlx_load():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    mock_model = MagicMock(name="model")
+    mock_tokenizer = MagicMock(name="tokenizer")
+    with patch("app.generator.load", return_value=(mock_model, mock_tokenizer)) as mock_load:
+        gen.load_model()
+    mock_load.assert_called_once()
+
+
+def test_load_model_passes_model_id_to_load():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    gen._model_id = "test-model-id"
+    mock_model = MagicMock()
+    mock_tokenizer = MagicMock()
+    with patch("app.generator.load", return_value=(mock_model, mock_tokenizer)) as mock_load:
+        gen.load_model()
+    mock_load.assert_called_once_with("test-model-id")
+
+
+def test_load_model_sets_self_model():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    mock_model = MagicMock(name="the_model")
+    mock_tokenizer = MagicMock()
+    with patch("app.generator.load", return_value=(mock_model, mock_tokenizer)):
+        gen.load_model()
+    assert gen.model is mock_model
+
+
+def test_load_model_sets_self_tokenizer():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    gen = Generator()
+    mock_model = MagicMock()
+    mock_tokenizer = MagicMock(name="the_tokenizer")
+    with patch("app.generator.load", return_value=(mock_model, mock_tokenizer)):
+        gen.load_model()
+    assert gen.tokenizer is mock_tokenizer
+
+
+def test_load_model_uses_env_var_model_id():
+    import os
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    with patch.dict(os.environ, {"GEN_MODEL": "my-custom-model"}):
+        gen = Generator()
+    mock_model = MagicMock()
+    mock_tokenizer = MagicMock()
+    with patch("app.generator.load", return_value=(mock_model, mock_tokenizer)) as mock_load:
+        gen.load_model()
+    mock_load.assert_called_once_with("my-custom-model")
+
+
+def test_load_model_default_model_id_when_no_env_var():
+    import os
+    from app.generator import Generator
+    env_without_gen = {k: v for k, v in os.environ.items() if k != "GEN_MODEL"}
+    with patch.dict(os.environ, env_without_gen, clear=True):
+        gen = Generator()
+    assert gen._model_id == "mlx-community/Mistral-7B-Instruct-v0.3-4bit"
+
+
+def test_load_model_model_is_none_before_load():
+    from app.generator import Generator
+    gen = Generator()
+    assert gen.model is None
+
+
+def test_load_model_tokenizer_is_none_before_load():
+    from app.generator import Generator
+    gen = Generator()
+    assert gen.tokenizer is None
+
+
+# ── Generator._stream_into_queue() unit tests ─────────────────
+
+
+def test_stream_into_queue_puts_tokens_from_stream_generate():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    from queue import Queue
+    from threading import Event
+
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+
+    chunk1 = MagicMock()
+    chunk1.text = "hello"
+    chunk2 = MagicMock()
+    chunk2.text = " world"
+
+    q = Queue()
+    done = Event()
+
+    with patch("app.generator.stream_generate", return_value=iter([chunk1, chunk2])):
+        gen._stream_into_queue("prompt", 512, q, done)
+
+    collected = []
+    while not q.empty():
+        collected.append(q.get_nowait())
+    assert collected == ["hello", " world"]
+
+
+def test_stream_into_queue_sets_done_event_after_stream():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    from queue import Queue
+    from threading import Event
+
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+
+    q = Queue()
+    done = Event()
+
+    with patch("app.generator.stream_generate", return_value=iter([])):
+        gen._stream_into_queue("prompt", 512, q, done)
+
+    assert done.is_set()
+
+
+def test_stream_into_queue_sets_done_even_on_exception():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    from queue import Queue
+    from threading import Event
+
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+
+    q = Queue()
+    done = Event()
+
+    def _raise():
+        raise RuntimeError("stream error")
+        yield  # make it a generator
+
+    with patch("app.generator.stream_generate", side_effect=RuntimeError("stream error")):
+        try:
+            gen._stream_into_queue("prompt", 512, q, done)
+        except RuntimeError:
+            pass
+
+    assert done.is_set()
+
+
+def test_stream_into_queue_passes_prompt_to_stream_generate():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    from queue import Queue
+    from threading import Event
+
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+
+    q = Queue()
+    done = Event()
+    captured = {}
+
+    def fake_stream_generate(model, tokenizer, prompt, max_tokens):
+        captured["prompt"] = prompt
+        captured["max_tokens"] = max_tokens
+        return iter([])
+
+    with patch("app.generator.stream_generate", side_effect=fake_stream_generate):
+        gen._stream_into_queue("my prompt text", 256, q, done)
+
+    assert captured["prompt"] == "my prompt text"
+    assert captured["max_tokens"] == 256
+
+
+def test_stream_into_queue_empty_stream_yields_nothing():
+    from app.generator import Generator
+    from unittest.mock import patch, MagicMock
+    from queue import Queue
+    from threading import Event
+
+    gen = Generator()
+    gen.model = MagicMock()
+    gen.tokenizer = MagicMock()
+
+    q = Queue()
+    done = Event()
+
+    with patch("app.generator.stream_generate", return_value=iter([])):
+        gen._stream_into_queue("prompt", 512, q, done)
+
+    assert q.empty()
+    assert done.is_set()
