@@ -3698,3 +3698,233 @@ def test_stream_into_queue_empty_stream_yields_nothing():
 
     assert q.empty()
     assert done.is_set()
+
+
+# ── get_db() session lifecycle unit tests ─────────────────────
+
+def test_get_db_yields_a_session():
+    from unittest.mock import MagicMock, patch
+    mock_session = MagicMock()
+    mock_session_local = MagicMock(return_value=mock_session)
+    with patch("app.database.SessionLocal", mock_session_local):
+        from app.database import get_db
+        gen = get_db()
+        db = next(gen)
+    assert db is mock_session
+
+
+def test_get_db_yields_exactly_once():
+    from unittest.mock import MagicMock, patch
+    mock_session = MagicMock()
+    with patch("app.database.SessionLocal", return_value=mock_session):
+        from app.database import get_db
+        gen = get_db()
+        next(gen)
+        with pytest.raises(StopIteration):
+            next(gen)
+
+
+def test_get_db_closes_session_on_normal_exit():
+    from unittest.mock import MagicMock, patch
+    mock_session = MagicMock()
+    with patch("app.database.SessionLocal", return_value=mock_session):
+        from app.database import get_db
+        gen = get_db()
+        next(gen)
+        try:
+            next(gen)
+        except StopIteration:
+            pass
+    mock_session.close.assert_called_once()
+
+
+def test_get_db_closes_session_when_exception_thrown_into_generator():
+    from unittest.mock import MagicMock, patch
+    mock_session = MagicMock()
+    with patch("app.database.SessionLocal", return_value=mock_session):
+        from app.database import get_db
+        gen = get_db()
+        next(gen)
+        try:
+            gen.throw(RuntimeError("simulated error"))
+        except RuntimeError:
+            pass
+    mock_session.close.assert_called_once()
+
+
+def test_get_db_calls_session_local_once():
+    from unittest.mock import MagicMock, patch
+    mock_factory = MagicMock()
+    mock_factory.return_value = MagicMock()
+    with patch("app.database.SessionLocal", mock_factory):
+        from app.database import get_db
+        gen = get_db()
+        next(gen)
+        try:
+            next(gen)
+        except StopIteration:
+            pass
+    mock_factory.assert_called_once_with()
+
+
+# ── Document ORM model unit tests ─────────────────────────────
+
+def test_document_table_name():
+    from app.models import Document
+    assert Document.__tablename__ == "documents"
+
+
+def test_document_has_doc_id_column():
+    from app.models import Document
+    assert hasattr(Document, "doc_id")
+
+
+def test_document_has_title_column():
+    from app.models import Document
+    assert hasattr(Document, "title")
+
+
+def test_document_has_content_column():
+    from app.models import Document
+    assert hasattr(Document, "content")
+
+
+def test_document_has_metadata_column():
+    from app.models import Document
+    assert hasattr(Document, "metadata_")
+
+
+def test_document_has_created_at_column():
+    from app.models import Document
+    assert hasattr(Document, "created_at")
+
+
+def test_document_doc_id_is_unique():
+    from app.models import Document
+    from sqlalchemy import inspect as sa_inspect
+    col = Document.__table__.c["doc_id"]
+    assert col.unique
+
+
+def test_document_doc_id_is_not_nullable():
+    from app.models import Document
+    col = Document.__table__.c["doc_id"]
+    assert not col.nullable
+
+
+def test_document_title_is_not_nullable():
+    from app.models import Document
+    col = Document.__table__.c["title"]
+    assert not col.nullable
+
+
+def test_document_content_is_not_nullable():
+    from app.models import Document
+    col = Document.__table__.c["content"]
+    assert not col.nullable
+
+
+def test_document_id_is_primary_key():
+    from app.models import Document
+    col = Document.__table__.c["id"]
+    assert col.primary_key
+
+
+# ── QueryLog ORM model unit tests ─────────────────────────────
+
+def test_querylog_table_name():
+    from app.models import QueryLog
+    assert QueryLog.__tablename__ == "query_logs"
+
+
+def test_querylog_has_query_column():
+    from app.models import QueryLog
+    assert hasattr(QueryLog, "query")
+
+
+def test_querylog_has_answer_column():
+    from app.models import QueryLog
+    assert hasattr(QueryLog, "answer")
+
+
+def test_querylog_has_retrieved_ids_column():
+    from app.models import QueryLog
+    assert hasattr(QueryLog, "retrieved_ids")
+
+
+def test_querylog_has_hit_rate_column():
+    from app.models import QueryLog
+    assert hasattr(QueryLog, "hit_rate")
+
+
+def test_querylog_has_mrr_column():
+    from app.models import QueryLog
+    assert hasattr(QueryLog, "mrr")
+
+
+def test_querylog_has_ndcg_column():
+    from app.models import QueryLog
+    assert hasattr(QueryLog, "ndcg")
+
+
+def test_querylog_has_faithfulness_column():
+    from app.models import QueryLog
+    assert hasattr(QueryLog, "faithfulness")
+
+
+def test_querylog_has_answer_relevance_column():
+    from app.models import QueryLog
+    assert hasattr(QueryLog, "answer_relevance")
+
+
+def test_querylog_has_created_at_column():
+    from app.models import QueryLog
+    assert hasattr(QueryLog, "created_at")
+
+
+def test_querylog_hit_rate_is_nullable():
+    from app.models import QueryLog
+    col = QueryLog.__table__.c["hit_rate"]
+    assert col.nullable
+
+
+def test_querylog_mrr_is_nullable():
+    from app.models import QueryLog
+    col = QueryLog.__table__.c["mrr"]
+    assert col.nullable
+
+
+def test_querylog_ndcg_is_nullable():
+    from app.models import QueryLog
+    col = QueryLog.__table__.c["ndcg"]
+    assert col.nullable
+
+
+def test_querylog_faithfulness_is_nullable():
+    from app.models import QueryLog
+    col = QueryLog.__table__.c["faithfulness"]
+    assert col.nullable
+
+
+def test_querylog_answer_relevance_is_nullable():
+    from app.models import QueryLog
+    col = QueryLog.__table__.c["answer_relevance"]
+    assert col.nullable
+
+
+def test_querylog_query_is_not_nullable():
+    from app.models import QueryLog
+    col = QueryLog.__table__.c["query"]
+    assert not col.nullable
+
+
+def test_querylog_answer_is_not_nullable():
+    from app.models import QueryLog
+    col = QueryLog.__table__.c["answer"]
+    assert not col.nullable
+
+
+def test_querylog_id_is_primary_key():
+    from app.models import QueryLog
+    col = QueryLog.__table__.c["id"]
+    assert col.primary_key
