@@ -1149,6 +1149,79 @@ def test_query_result_has_required_fields():
         assert field in result[0]
 
 
+# ── VectorStore.query() missing-ID defensive branch tests ────
+
+def test_query_skips_ranked_id_absent_from_fetched():
+    # Simulates a document deleted between ranking and collection.get().
+    # The missing ID must be silently excluded from results.
+    from app.vector_store import VectorStore
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    # Dense returns two IDs; collection.get() only returns one of them.
+    vs.collection.get.return_value = {
+        "ids": ["c1"], "documents": ["text c1"], "metadatas": [{}],
+    }
+    with patch.object(vs, "_dense_query", return_value={"c1": 0.9, "c2": 0.8}), \
+         patch.object(vs, "_bm25_query", return_value={}):
+        result = vs.query("test", top_k=2)
+    assert len(result) == 1
+    assert result[0]["chunk_id"] == "c1"
+
+
+def test_query_all_ranked_ids_absent_from_fetched_returns_empty():
+    # If every ranked ID is missing from the fetch, the result is empty.
+    from app.vector_store import VectorStore
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.get.return_value = {"ids": [], "documents": [], "metadatas": []}
+    with patch.object(vs, "_dense_query", return_value={"c1": 0.9}), \
+         patch.object(vs, "_bm25_query", return_value={}):
+        result = vs.query("test", top_k=1)
+    assert result == []
+
+
+def test_query_partial_fetch_preserves_score_of_found_id():
+    # The returned chunk's score must reflect the fused score, not the missing one.
+    from app.vector_store import VectorStore, HYBRID_ALPHA
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    # Only c2 is returned by collection.get(); c1 is missing.
+    vs.collection.get.return_value = {
+        "ids": ["c2"], "documents": ["text c2"], "metadatas": [{"title": "D"}],
+    }
+    with patch.object(vs, "_dense_query", return_value={"c1": 0.95, "c2": 0.7}), \
+         patch.object(vs, "_bm25_query", return_value={}):
+        result = vs.query("test", top_k=2)
+    assert len(result) == 1
+    assert result[0]["chunk_id"] == "c2"
+    assert result[0]["score"] == round(HYBRID_ALPHA * 0.7, 4)
+
+
+def test_query_missing_id_does_not_affect_returned_count():
+    # Losing one ranked ID through the defensive skip must reduce the output count.
+    from app.vector_store import VectorStore
+    from unittest.mock import patch, MagicMock
+    vs = VectorStore.__new__(VectorStore)
+    vs.collection = MagicMock()
+    vs.collection.get.return_value = {
+        "ids": ["c2", "c3"],
+        "documents": ["text2", "text3"],
+        "metadatas": [{}, {}],
+    }
+    with patch.object(vs, "_dense_query", return_value={"c1": 0.9, "c2": 0.8, "c3": 0.7}), \
+         patch.object(vs, "_bm25_query", return_value={}):
+        result = vs.query("test", top_k=3)
+    # c1 was ranked first but is absent from fetched; only c2 and c3 are returned.
+    assert len(result) == 2
+    chunk_ids = [r["chunk_id"] for r in result]
+    assert "c1" not in chunk_ids
+    assert "c2" in chunk_ids
+    assert "c3" in chunk_ids
+
+
 # ── /query/stream route unit tests ───────────────────────────
 
 _STREAM_FAKE_CHUNKS = [
