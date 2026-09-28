@@ -4001,3 +4001,105 @@ def test_querylog_id_is_primary_key():
     from app.models import QueryLog
     col = QueryLog.__table__.c["id"]
     assert col.primary_key
+
+
+# ── query min_length=1 validation unit tests ─────────────────
+
+def test_query_empty_string_returns_422():
+    r = client.post("/query", json={"query": "", "top_k": 3})
+    assert r.status_code == 422
+
+
+def test_query_missing_query_field_returns_422():
+    r = client.post("/query", json={"top_k": 3})
+    assert r.status_code == 422
+
+
+def test_query_nonempty_string_passes_validation():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer.return_value = "Some answer."
+        r = client.post("/query", json={"query": "a", "top_k": 1})
+    assert r.status_code == 200
+
+
+def test_query_eval_empty_string_returns_422():
+    r = client.post("/query/eval", json={
+        "query": "",
+        "relevant_doc_ids": ["c1"],
+        "top_k": 3,
+    })
+    assert r.status_code == 422
+
+
+def test_query_eval_missing_query_field_returns_422():
+    r = client.post("/query/eval", json={
+        "relevant_doc_ids": ["c1"],
+        "top_k": 3,
+    })
+    assert r.status_code == 422
+
+
+def test_query_eval_nonempty_string_passes_validation():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _EVAL_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Some answer."
+            r = client.post("/query/eval", json={
+                "query": "a",
+                "relevant_doc_ids": ["c1"],
+                "top_k": 1,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    assert r.status_code == 200
+
+
+def test_stream_empty_string_returns_422():
+    r = client.post("/query/stream", json={"query": "", "top_k": 3})
+    assert r.status_code == 422
+
+
+def test_stream_missing_query_field_returns_422():
+    r = client.post("/query/stream", json={"top_k": 3})
+    assert r.status_code == 422
+
+
+def test_stream_nonempty_string_passes_validation():
+    from unittest.mock import patch
+    with patch("app.main.vector_store") as mock_vs, \
+         patch("app.main.generator") as mock_gen:
+        mock_vs.count.return_value = 5
+        mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+        mock_gen.answer_stream = _fake_stream_tokens
+        r = client.post("/query/stream", json={"query": "a", "top_k": 1})
+    assert r.status_code == 200
+
+
+def test_query_422_body_mentions_query_field():
+    r = client.post("/query", json={"query": "", "top_k": 3})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    locs = [d["loc"] for d in detail]
+    assert any("query" in loc for loc in locs)
+
+
+def test_query_eval_422_body_mentions_query_field():
+    r = client.post("/query/eval", json={
+        "query": "",
+        "relevant_doc_ids": [],
+        "top_k": 3,
+    })
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    locs = [d["loc"] for d in detail]
+    assert any("query" in loc for loc in locs)
