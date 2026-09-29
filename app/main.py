@@ -42,13 +42,13 @@ app = FastAPI(title="RAG Pipeline", version="1.0.0", lifespan=lifespan)
 
 class QueryReq(BaseModel):
     query: str = Field(..., min_length=1)
-    top_k: int = 5
+    top_k: int = Field(default=5, ge=1)
     rerank: bool = False
 
 class EvalQueryReq(BaseModel):
     query: str = Field(..., min_length=1)
     relevant_doc_ids: list[str]
-    top_k: int = 5
+    top_k: int = Field(default=5, ge=1)
     rerank: bool = False
 
 @app.post("/query", tags=["rag"])
