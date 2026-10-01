@@ -2426,3 +2426,74 @@ def test_eval_history_null_metric_fields_preserved():
     assert row["mrr"] is None
     assert row["ndcg"] is None
     assert row["answer_relevance"] is None
+
+
+# ── relevant_doc_ids blank-element validation unit tests ─────
+
+def test_query_eval_empty_string_doc_id_returns_422():
+    r = client.post("/query/eval", json={
+        "query": "What is ML?",
+        "relevant_doc_ids": [""],
+        "top_k": 3,
+    })
+    assert r.status_code == 422
+
+
+def test_query_eval_list_with_one_blank_and_one_valid_returns_422():
+    r = client.post("/query/eval", json={
+        "query": "What is ML?",
+        "relevant_doc_ids": ["valid-id", ""],
+        "top_k": 3,
+    })
+    assert r.status_code == 422
+
+
+def test_query_eval_multiple_empty_string_doc_ids_returns_422():
+    r = client.post("/query/eval", json={
+        "query": "What is ML?",
+        "relevant_doc_ids": ["", ""],
+        "top_k": 3,
+    })
+    assert r.status_code == 422
+
+
+def test_query_eval_422_body_mentions_relevant_doc_ids_for_blank_element():
+    r = client.post("/query/eval", json={
+        "query": "What is ML?",
+        "relevant_doc_ids": [""],
+        "top_k": 3,
+    })
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    locs = [d["loc"] for d in detail]
+    assert any("relevant_doc_ids" in loc for loc in locs)
+
+
+def test_query_eval_nonempty_doc_ids_all_pass_validation():
+    from unittest.mock import patch, MagicMock
+    from app.database import get_db
+    mock_db = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("app.main.vector_store") as mock_vs, \
+             patch("app.main.generator") as mock_gen:
+            mock_vs.count.return_value = 5
+            mock_vs.query.return_value = _STREAM_FAKE_CHUNKS
+            mock_gen.answer.return_value = "Supervised learning uses labeled data."
+            r = client.post("/query/eval", json={
+                "query": "supervised learning",
+                "relevant_doc_ids": ["c1", "c2"],
+                "top_k": 1,
+            })
+    finally:
+        app.dependency_overrides.clear()
+    assert r.status_code == 200
+
+
+def test_query_eval_empty_list_still_returns_422():
+    r = client.post("/query/eval", json={
+        "query": "What is ML?",
+        "relevant_doc_ids": [],
+        "top_k": 3,
+    })
+    assert r.status_code == 422
