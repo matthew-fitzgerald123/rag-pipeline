@@ -689,6 +689,27 @@ def test_chunker_zero_overlap_is_valid():
     assert len(chunks) == 1
 
 
+def test_chunker_chunk_ids_are_consecutive_despite_whitespace_gaps():
+    from app.chunker import chunk_document
+    # Content + whitespace-only interior + content at a small chunk_size forces
+    # a whitespace-only window that gets stripped to "". The chunk IDs must
+    # still be 0-based consecutive ordinals, not reflect the raw window index.
+    text = "a" * 10 + " " * 10 + "b" * 10
+    chunks = chunk_document("doc1", text, {}, chunk_size=10, overlap=0)
+    assert len(chunks) == 2
+    assert chunks[0].chunk_id == "doc1_chunk_0"
+    assert chunks[1].chunk_id == "doc1_chunk_1"
+
+
+def test_chunker_chunk_index_metadata_is_consecutive_despite_whitespace_gaps():
+    from app.chunker import chunk_document
+    text = "a" * 10 + " " * 10 + "b" * 10
+    chunks = chunk_document("doc1", text, {}, chunk_size=10, overlap=0)
+    assert len(chunks) == 2
+    assert chunks[0].metadata["chunk_index"] == 0
+    assert chunks[1].metadata["chunk_index"] == 1
+
+
 # ── citations._tokens() and _overlap() unit tests ─────────
 
 def test_citations_tokens_lowercases_and_splits():
