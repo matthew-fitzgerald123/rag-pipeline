@@ -153,9 +153,11 @@ def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
     db.commit()
 
     return {
-        "query":  req.query,
-        "answer": answer,
-        "chunks": chunks,
+        "query":     req.query,
+        "answer":    answer,
+        "chunks":    chunks,
+        "reranked":  req.rerank,
+        "citations": extract_citations(answer, chunks),
         "eval": {
             "hit_rate":         hr,
             "mrr":              mrr,
