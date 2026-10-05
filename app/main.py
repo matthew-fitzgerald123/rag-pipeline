@@ -3,8 +3,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import Any, AsyncIterator
+from pydantic import BaseModel, Field
+from typing import Annotated, Any, AsyncIterator
 import json
 import os
 from dotenv import load_dotenv
@@ -47,7 +47,7 @@ class QueryReq(BaseModel):
 
 class EvalQueryReq(BaseModel):
     query: str
-    relevant_doc_ids: list[str]
+    relevant_doc_ids: list[Annotated[str, Field(min_length=1)]] = Field(..., min_length=1)
     top_k: int = 5
     rerank: bool = False
 
@@ -124,6 +124,8 @@ async def query_stream(req: QueryReq, db: Session = Depends(get_db)):
 
 @app.post("/query/eval", tags=["rag"])
 def query_with_eval(req: EvalQueryReq, db: Session = Depends(get_db)):
+    if vector_store.count() == 0:
+        raise HTTPException(400, "No documents indexed. Run: make ingest")
     candidates = vector_store.query(req.query, top_k=max(req.top_k, RERANKER_TOP_K))
     if not candidates:
         raise HTTPException(404, "No relevant chunks found")
